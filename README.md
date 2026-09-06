@@ -13,6 +13,19 @@ working as plain readable files if that bridge ever goes away.
 > **Status: pre-release.** The contract is specified ([docs/SPEC.md](docs/SPEC.md));
 > the implementation is in progress. Nothing here is installable yet.
 
+## Development
+
+Build the stdio server with Go 1.23 or newer:
+
+```sh
+go build -o notes-mcp ./cmd/notes-mcp
+AGENT_NOTES_DIR="$HOME/.agent-notes" ./notes-mcp
+```
+
+The server reads and writes line-delimited JSON-RPC on stdin/stdout. Run the
+end-to-end probe from the repository root with `scripts/probe.sh` (or pass a
+prebuilt binary as its first argument).
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE).
