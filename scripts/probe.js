@@ -135,7 +135,6 @@ try {
   ]);
   const emptyResult = resultOf(emptyResponses[1]);
   check("thread_hint is empty after notes are cleared", emptyResult && !emptyResult.isError && Array.isArray(emptyResult.content) && emptyResult.content.length === 0);
-  check("transport is stdio-only", true);
 } catch (error) {
   process.stderr.write(`${error.stack || error}\n`);
   process.exitCode = 2;
