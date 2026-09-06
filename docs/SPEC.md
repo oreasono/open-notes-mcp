@@ -1,4 +1,4 @@
-# open-notes-mcp — Contract Specification (v0.1, 2026-09-06)
+# open-notes-mcp — Contract Specification (v0.2, 2026-09-07)
 
 > **Status**: publishable. This document is the clean-room source of truth for the
 > open-source implementation. It carries every "why" from the production-proven
@@ -9,6 +9,12 @@
 > tools as a *convenience path*, and §9 is stated as load-bearing rather than
 > supporting. Rationale in §3 and §9; it follows from §2/§4, which read the
 > filesystem and never inspect how a file got there.
+>
+> **v0.2 change** (resolves a contradiction inside v0/v0.1): §4 said both
+> "INDEX.md is carried **in full**" and "hard cap **4000 bytes**". Those two
+> cannot both hold once INDEX exceeds the cap — and the cap wins, so the tail
+> of INDEX is silently the part that does *not* survive the window cut. §4 now
+> says which one wins and §9 makes INDEX compactness a contract term.
 
 ## 1. Purpose
 
@@ -126,15 +132,30 @@ Read any file below with the notes read_file tool.
 ...
 ```
 
-- `INDEX.md` is carried **in full** — it is the model's own curated summary.
-  Everything else is listed by name/size/mtime and read on demand; that is what
-  keeps the hint bounded.
+- `INDEX.md` is carried **in full only while it fits** — it is the model's own
+  curated summary. Everything else is listed by name/size/mtime and read on
+  demand; that is what keeps the hint bounded.
+- ⛔ **"In full" is not a promise; the cap below wins.** Once INDEX alone
+  exceeds the cap, the hint carries only its first ~3,900 bytes and the rest is
+  cut — so the part of INDEX the agent wrote *last* is exactly the part that
+  does not survive the window cut. An INDEX at 2× the cap loses more than half
+  of itself, silently, on the one path the whole product exists to protect.
+  ⇒ Implementations MUST NOT paper over this by raising the cap (§2 fixes it
+  upstream) or by dropping the marker. The fix is §9: keep INDEX small.
 - Hard cap **4000 bytes** (upstream's `MAX_THREAD_HINT_BYTES`). Matching it is
   not cosmetic: the hint is prepended to a window that was just cut for being
   too full; an unbounded hint reproduces the problem it exists to solve.
 - Truncation cuts on a UTF-8 rune boundary and **says so** with a visible
   marker line pointing at `list_files`/`read_file`. A silently truncated hint
   reads as a complete one and the model acts on a half-sentence.
+- ⭐ **When the overflow is INDEX itself, the marker MUST say so and MUST tell
+  the agent to split it** (move detail into partition files, leave pointers).
+  Reason this belongs here and not only in a write-tool warning: the hint is
+  derived from the filesystem, so this message reaches the agent **however it
+  wrote the file** (§3) — a shell redirect gets the same correction as a
+  `write_file` call. It is the only self-correcting path in the design.
+- ⚠️ The marker must stay **absent** when nothing was truncated. A marker that
+  is always present carries no information and trains the agent to ignore it.
 - No notes on disk → empty result → no injection (§2).
 
 ## 5. Storage contract
@@ -213,6 +234,17 @@ The installer therefore ships:
   the INDEX contract: update `INDEX.md` at task boundaries (conclusions,
   direction changes, completed steps) — *note-taking is part of the workflow,
   not an escape hatch for a full window*.
+- ⭐ **The contract MUST state that INDEX is a table of contents, not a
+  notebook**: a filename + a one-line summary + a pointer, per topic; every
+  detail lives in a partition file. **Target: under ~3,500 bytes.**
+  Observed drift: agents treat INDEX as the notebook and grow it past 8 KB —
+  more than twice the §4 cap, at which point over half of it stops surviving
+  window cuts (§4). A contract that only says "write notes" produces exactly
+  this failure; the size discipline has to be stated as part of the contract.
+- Optional guard rail, **convenience only**: a `write_file` to `INDEX.md` above
+  the threshold may return an advisory alongside the byte count (§3).
+  ⛔ It must not be load-bearing — an agent writing by shell redirect never
+  sees it. The §4 truncation marker is the path that always reaches.
 - Any additional reminder text MUST carry a unique marker string. Codex itself
   emits `You have N tokens left in this context window` every turn; grepping
   for generic phrasing collides with that counter and produces false evidence
