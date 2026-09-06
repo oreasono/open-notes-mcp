@@ -1,9 +1,14 @@
-# open-notes-mcp — Contract Specification (v0, 2026-09-06)
+# open-notes-mcp — Contract Specification (v0.1, 2026-09-06)
 
 > **Status**: publishable. This document is the clean-room source of truth for the
 > open-source implementation. It carries every "why" from the production-proven
 > internal implementation with all internal context removed. Code written from
 > this spec plus the upstream references below owes nothing to the private tree.
+>
+> **v0.1 change** (weighting only — no contract change): §3 marks the MCP write
+> tools as a *convenience path*, and §9 is stated as load-bearing rather than
+> supporting. Rationale in §3 and §9; it follows from §2/§4, which read the
+> filesystem and never inspect how a file got there.
 
 ## 1. Purpose
 
@@ -72,6 +77,21 @@ automatic injection, not the notes.
   itself, duplicating the hint it was just handed.
 
 ## 3. Tool surface
+
+⭐ **What is actually load-bearing.** The bridge reads the *filesystem* (§4) —
+it never inspects how a file came to be there. So the irreducible pair is
+**the §9 INDEX contract** (the agent decides to write) plus **§5's writable
+notes directory at an agreed path**. The write tools below are a *convenience
+path*, not a dependency: an agent that writes with a shell redirect, an editor,
+or another harness's own file tool is served exactly as well.
+
+Two consequences worth designing for:
+
+- Do not gate any behaviour on "the write happened through our tool" — no
+  bookkeeping that only the write path updates, no index the tools alone
+  maintain. Anything the hint needs must be derivable from the files on disk.
+- This widens the addressable surface: a harness that never exposes these
+  tools still works, provided its agent can write to the notes directory.
 
 One hidden tool plus five model-visible tools:
 
@@ -171,11 +191,23 @@ end-to-end probe:
    `codex exec` with a dead model address + assert `.last-hint` was stamped
    (§2: the bridge fires before model traffic).
 
-## 9. Behavioural layer (ships with the installer, not optional)
+## 9. Behavioural layer (load-bearing — half the product, not an add-on)
 
 Production observation: with tools installed and documented, agents wrote
-**zero** notes in the initial observation window — recovery is a technical
-problem, but **writing is a behavioural one**. The installer therefore ships:
+**zero** notes in the initial observation window (0 of 30) — recovery is a
+technical problem, but **writing is a behavioural one**.
+
+A later single-agent trial added the INDEX contract below and changed nothing
+else; that agent then wrote a substantial INDEX at task boundaries, on its own,
+without being forced by a window cut.
+
+⚠️ **Weigh that evidence honestly**: the negative result is 0/30, the positive
+one is n=1. It is enough to justify shipping the contract as a first-class part
+of the product; it is **not** enough to claim the contract makes agents write.
+⛔ Do not put "the contract makes your agent take notes" in the README — say
+what the contract *asks for*, and measure what actually happens (§9 metrics).
+
+The installer therefore ships:
 
 - An `AGENTS.md` block (sentinel-marked, idempotently appended) establishing
   the INDEX contract: update `INDEX.md` at task boundaries (conclusions,
