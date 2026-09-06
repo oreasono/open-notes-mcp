@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	maxFileBytes     int64 = 1_000_000
-	maxJSONLineBytes       = 8 * 1024 * 1024
-	maxHintBytes           = 4_000
+	maxFileBytes      int64 = 1_000_000
+	maxJSONLineBytes        = 8 * 1024 * 1024
+	maxHintBytes            = 4_000
+	indexOverflowText       = "[Hint truncated: INDEX.md is too large; split details into partition files and leave pointers in INDEX.md. Use list_files/read_file for remaining notes.]"
 )
 
 // Store is the filesystem boundary for the server. The mutex makes an
@@ -553,16 +554,23 @@ func (s *Store) hint(threadID string) (string, error) {
 	b.WriteString("Notes you wrote in earlier context windows of this session.\nRead any file below with the notes read_file tool.\n\n")
 	indexPath := filepath.Join(s.root, "INDEX.md")
 	indexOverflow := false
-	if info, statErr := os.Lstat(indexPath); statErr == nil && info.Mode().IsRegular() && info.Size() <= maxFileBytes {
-		data, readErr := os.ReadFile(indexPath)
-		if readErr != nil {
-			return "", fmt.Errorf("read INDEX.md: %w", readErr)
+	if info, statErr := os.Lstat(indexPath); statErr == nil && info.Mode().IsRegular() {
+		if info.Size() > maxFileBytes {
+			indexOverflow = true
+			b.WriteString("--- INDEX.md ---\n")
+			b.WriteString(indexOverflowText)
+			b.WriteString("\n\n")
+		} else {
+			data, readErr := os.ReadFile(indexPath)
+			if readErr != nil {
+				return "", fmt.Errorf("read INDEX.md: %w", readErr)
+			}
+			b.WriteString("--- INDEX.md ---\n")
+			indexText := normalizeTrailingNewline(data)
+			b.WriteString(indexText)
+			b.WriteString("\n")
+			indexOverflow = len([]byte(indexText)) > maxHintBytes-len([]byte("Notes you wrote in earlier context windows of this session.\nRead any file below with the notes read_file tool.\n\n--- INDEX.md ---\n\n--- other notes ---\n"))
 		}
-		b.WriteString("--- INDEX.md ---\n")
-		indexText := normalizeTrailingNewline(data)
-		b.WriteString(indexText)
-		b.WriteString("\n")
-		indexOverflow = len([]byte(indexText)) > maxHintBytes-len([]byte("Notes you wrote in earlier context windows of this session.\nRead any file below with the notes read_file tool.\n\n--- INDEX.md ---\n\n--- other notes ---\n"))
 	}
 	b.WriteString("--- other notes ---\n")
 	for _, entry := range entries {
@@ -588,7 +596,7 @@ func truncateHint(hint string, indexOverflow bool) string {
 	}
 	marker := "\n[Hint truncated; use list_files/read_file for remaining notes.]\n"
 	if indexOverflow {
-		marker = "\n[Hint truncated: INDEX.md is too large; split details into partition files and leave pointers in INDEX.md. Use list_files/read_file for remaining notes.]\n"
+		marker = "\n" + indexOverflowText + "\n"
 	}
 	limit := maxHintBytes - len([]byte(marker))
 	if limit < 0 {

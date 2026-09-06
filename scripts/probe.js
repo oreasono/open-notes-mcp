@@ -110,6 +110,17 @@ try {
   check("oversized INDEX hint is capped", Buffer.byteLength(oversizedHint, "utf8") <= 4000);
   check("oversized INDEX marker names source and split action", oversizedHint.includes("INDEX.md is too large") && oversizedHint.includes("split details"));
 
+  fs.writeFileSync(path.join(notesRoot, "INDEX.md"), "x".repeat(1000001), { mode: 0o600 });
+  const fileCapThread = crypto.randomUUID();
+  const fileCapResponses = run([
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+    call(2, "thread_hint", null, { threadId: fileCapThread }),
+  ]);
+  const fileCapResult = resultOf(fileCapResponses[1]);
+  const fileCapHint = fileCapResult?.content?.map((block) => block.text || "").join("\n") || "";
+  check("oversize INDEX file still produces a capped hint", Buffer.byteLength(fileCapHint, "utf8") <= 4000);
+  check("oversize INDEX file names source and split action", fileCapHint.includes("INDEX.md is too large") && fileCapHint.includes("split details"));
+
   const pathResponses = run([
     { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
     call(2, "write_file", { path: "./x.md", content: "x" }),

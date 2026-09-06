@@ -91,6 +91,24 @@ func TestLargeIndexHintNamesTheSource(t *testing.T) {
 	}
 }
 
+func TestOversizeIndexHintNamesTheSource(t *testing.T) {
+	root := t.TempDir()
+	s, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "INDEX.md"), []byte(strings.Repeat("x", 1_000_001)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	hint, err := s.store.hint("thread-oversize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len([]byte(hint)) > maxHintBytes || !strings.Contains(hint, "INDEX.md is too large") || !strings.Contains(hint, "split details") {
+		t.Fatalf("oversize index hint = %q (len=%d)", hint, len([]byte(hint)))
+	}
+}
+
 func TestJSONRPCToolsAndNotifications(t *testing.T) {
 	s, err := New(t.TempDir())
 	if err != nil {
