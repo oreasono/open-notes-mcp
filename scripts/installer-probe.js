@@ -213,6 +213,49 @@ function snapshotsEqual(left, right) {
   return JSON.stringify([...left]) === JSON.stringify([...right]);
 }
 
+function commandAvailable(command) {
+  const result = spawn(command, ["--version"], { timeout: 5000 });
+  return result.error?.code !== "ENOENT";
+}
+
+function threadHintText(binary, env) {
+  const response = spawn(binary, [], {
+    env,
+    input: `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "thread_hint", arguments: null, _meta: { threadId: "probe-thread" } } })}\n`,
+  });
+  if (response.error || response.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(response.stdout.trim());
+    return parsed.result.content?.[0]?.text || "";
+  } catch {
+    return null;
+  }
+}
+
+function claudeHintText(binary, env) {
+  const response = spawn(binary, ["hint", "--source", "claude-code"], {
+    env,
+    input: `${JSON.stringify({ session_id: "probe-session", hook_event_name: "SessionStart" })}\n`,
+  });
+  if (response.error || response.status !== 0) return null;
+  if (!response.stdout.trim()) return "";
+  try {
+    const parsed = JSON.parse(response.stdout.trim());
+    return parsed.hookSpecificOutput?.additionalContext || null;
+  } catch {
+    return null;
+  }
+}
+
+function claudeStampText(notesRoot) {
+  try {
+    return fs.readFileSync(path.join(notesRoot, ".last-hint"), "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 try {
   fs.mkdirSync(packRoot, { recursive: true });
   fs.mkdirSync(harnessRoot, { recursive: true });
@@ -224,12 +267,91 @@ try {
   const nativeExecutable = path.join(platformDirectory(), "bin", process.platform === "win32" ? "notes-mcp.exe" : "notes-mcp");
   check("prepack builds the current platform binary from source", fs.statSync(nativeExecutable).isFile());
   const nativeTarball = npmPack(platformDirectory());
+  const installResult = mustRun("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", nativeTarball, cliTarball], { cwd: harnessRoot, env: npmEnv });
+  check("local tarballs install without registry access", installResult.status === 0, nativePackage.name);
   const gitTreeScan = scanGitTree();
   check("git tree contains only approved public hosts", gitTreeScan.ok, gitTreeScan.detail);
   const tarballScan = scanTarball(cliTarball);
   const nativeTarballScan = scanTarball(nativeTarball);
   check("packed tarballs contain no internal release strings", tarballScan.ok && nativeTarballScan.ok,
     tarballScan.ok && nativeTarballScan.ok ? `${tarballScan.detail}; ${nativeTarballScan.detail}` : tarballScan.detail || nativeTarballScan.detail);
+
+  const claudeCommand = process.env.OPEN_NOTES_MCP_CLAUDE_BIN || "claude";
+  const claudePresent = commandAvailable(claudeCommand);
+  const claudeEnv = isolatedEnv("claude-harness");
+  if (process.env.OPEN_NOTES_MCP_CLAUDE_BIN) claudeEnv.OPEN_NOTES_MCP_CLAUDE_BIN = process.env.OPEN_NOTES_MCP_CLAUDE_BIN;
+  else if (!claudePresent) claudeEnv.OPEN_NOTES_MCP_CLAUDE_BIN = path.join(tempRoot, "missing-claude");
+  const claudeSettings = path.join(claudeEnv.HOME, ".claude", "settings.json");
+  const claudeMd = path.join(claudeEnv.HOME, ".claude", "CLAUDE.md");
+  const originalClaudeSettings = '{"hooks":{"UserPromptSubmit":[{"matcher":"*","hooks":[]}]}, "custom":true}\n';
+  const originalClaudeMd = "user-owned Claude instructions\n";
+  fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
+  fs.writeFileSync(claudeSettings, originalClaudeSettings);
+  fs.writeFileSync(claudeMd, originalClaudeMd);
+  const claudeInit = runNpx(["init", "--harness", "claude-code"], claudeEnv);
+  const claudeParsedSettings = JSON.parse(fs.readFileSync(claudeSettings, "utf8"));
+  const claudeEntry = claudeParsedSettings.hooks.SessionStart.find((entry) => entry.hooks?.some((hook) => hook.command?.includes("open-notes-mcp:claude-code")));
+  const claudeInitStamp = claudeStampText(claudeEnv.AGENT_NOTES_DIR);
+  const claudeInitStatus = claudePresent
+    ? claudeInit.status === 0 && /PASS liveness:/.test(claudeInit.stdout) && /source=claude-code/.test(claudeInitStamp || "")
+    : claudeInit.status === 2 && /SKIP liveness: Claude Code CLI not found on PATH/.test(claudeInit.stdout);
+  check("Claude init registers startup/resume/compact hook with 10s timeout", claudeInitStatus
+    && claudeEntry?.matcher === "startup|resume|compact"
+    && claudeEntry.hooks[0].timeout === 10);
+  const claudeSettingsHash = sha(claudeSettings);
+  const claudeMdHash = sha(claudeMd);
+  const claudeSecond = runNpx(["init", "--harness", "claude-code"], claudeEnv);
+  check("Claude init is byte-idempotent", claudeSecond.status === (claudePresent ? 0 : 2)
+    && sha(claudeSettings) === claudeSettingsHash && sha(claudeMd) === claudeMdHash
+    && JSON.parse(fs.readFileSync(claudeSettings, "utf8")).hooks.SessionStart.filter((entry) => entry.hooks?.some((hook) => hook.command?.includes("open-notes-mcp:claude-code"))).length === 1);
+  const claudeDoctor = runNpx(["doctor", "--harness", "claude-code"], claudeEnv);
+  check("Claude doctor reports installed hook and liveness state", claudeDoctor.status === (claudePresent ? 0 : 2)
+    && /PASS Claude hook:/.test(claudeDoctor.stdout)
+    && /PASS CLAUDE.md:/.test(claudeDoctor.stdout)
+    && (claudePresent ? /PASS liveness:/.test(claudeDoctor.stdout) : /SKIP liveness: Claude Code CLI not found on PATH/.test(claudeDoctor.stdout)));
+
+  const parityNotes = path.join(tempRoot, "claude-hint-parity-notes");
+  fs.mkdirSync(parityNotes, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(parityNotes, "INDEX.md"), "parity marker\n", { mode: 0o600 });
+  const parityEnv = { ...claudeEnv, AGENT_NOTES_DIR: parityNotes };
+  const threadText = threadHintText(nativeExecutable, parityEnv);
+  const claudeText = claudeHintText(nativeExecutable, parityEnv);
+  check("Claude hint matches thread_hint byte-for-byte", threadText !== null && claudeText !== null
+    && Buffer.from(threadText).equals(Buffer.from(claudeText)));
+  check("hint parity probe detects an extra newline mutation", threadText !== null && claudeText !== null
+    && !Buffer.from(threadText).equals(Buffer.from(`${claudeText}\n`)));
+
+  const emptyNotes = path.join(tempRoot, "claude-empty-notes");
+  const emptyResult = spawn(nativeExecutable, ["hint", "--source", "claude-code"], {
+    env: { ...claudeEnv, AGENT_NOTES_DIR: emptyNotes },
+    input: `${JSON.stringify({ session_id: "empty-probe", hook_event_name: "SessionStart" })}\n`,
+  });
+  check("Claude hint is silent for an empty notes directory", emptyResult.status === 0 && emptyResult.stdout === "");
+
+  let hookRemovalMutation = true;
+  if (claudePresent) {
+    const stampBeforeRemoval = claudeStampText(claudeEnv.AGENT_NOTES_DIR);
+    const removal = runNpx(["uninstall", "--harness", "claude-code"], claudeEnv);
+    const settingsAfterRemoval = JSON.parse(fs.readFileSync(claudeSettings, "utf8"));
+    const managedAfterRemoval = settingsAfterRemoval.hooks?.SessionStart?.some((entry) => entry.hooks?.some((hook) => hook.command?.includes("open-notes-mcp:claude-code")));
+    spawn(claudeCommand, ["-p", "noop", "--output-format", "text"], {
+      cwd: os.tmpdir(),
+      env: { ...claudeEnv, ANTHROPIC_BASE_URL: "http://127.0.0.1:9", ANTHROPIC_API_KEY: "open-notes-mcp-probe-placeholder" },
+      timeout: 15000,
+    });
+    hookRemovalMutation = removal.status === 0 && !managedAfterRemoval && claudeStampText(claudeEnv.AGENT_NOTES_DIR) === stampBeforeRemoval;
+    runNpx(["init", "--harness", "claude-code"], claudeEnv);
+  }
+  check("removing the Claude hook prevents a fresh stamp on rerun", hookRemovalMutation,
+    claudePresent ? "" : "SKIP: Claude Code CLI not found");
+  const claudeNotesBefore = snapshotTree(claudeEnv.AGENT_NOTES_DIR);
+  const claudeUninstall = runNpx(["uninstall", "--harness", "claude-code"], claudeEnv);
+  check("Claude uninstall restores user files and preserves notes", claudeUninstall.status === 0
+    && fs.readFileSync(claudeSettings, "utf8") === originalClaudeSettings
+    && fs.readFileSync(claudeMd, "utf8") === originalClaudeMd
+    && snapshotsEqual(claudeNotesBefore, snapshotTree(claudeEnv.AGENT_NOTES_DIR))
+    && !fs.existsSync(path.join(claudeEnv.CODEX_HOME, "open-notes-mcp.install.json")));
+
   const env = isolatedEnv("primary");
   const loc = {
     config: path.join(env.CODEX_HOME, "config.toml"),
@@ -261,8 +383,6 @@ try {
   check("init records token budget ownership in CODEX_HOME state", stateAfterInit.tokenBudget.value === false
     && stateAfterInit.tokenBudget.line.includes("original value")
     && (fs.statSync(loc.state).mode & 0o777) === 0o600);
-  const installResult = mustRun("npm", ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", nativeTarball, cliTarball], { cwd: harnessRoot, env: npmEnv });
-  check("local tarballs install without registry access", installResult.status === 0, nativePackage.name);
   const second = runNpx(["init", "--enable-token-budget"], env);
   const secondHashes = new Map([
     ["config", sha(loc.config)],
@@ -300,41 +420,6 @@ try {
   check("uninstall restores both global instruction candidates", overrideUninstall.status === 0
     && fs.readFileSync(overrideDefault, "utf8") === "default global instructions\n"
     && fs.readFileSync(overrideActive, "utf8") === "active override instructions\n");
-
-  const claudeEnv = isolatedEnv("claude-harness");
-  claudeEnv.OPEN_NOTES_MCP_CLAUDE_BIN = path.join(tempRoot, "missing-claude");
-  const claudeSettings = path.join(claudeEnv.HOME, ".claude", "settings.json");
-  const claudeMd = path.join(claudeEnv.HOME, ".claude", "CLAUDE.md");
-  const originalClaudeSettings = '{"hooks":{"UserPromptSubmit":[{"matcher":"*","hooks":[]}]}, "custom":true}\n';
-  const originalClaudeMd = "user-owned Claude instructions\n";
-  fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
-  fs.writeFileSync(claudeSettings, originalClaudeSettings);
-  fs.writeFileSync(claudeMd, originalClaudeMd);
-  const claudeInit = runNpx(["init", "--harness", "claude-code"], claudeEnv);
-  const claudeParsedSettings = JSON.parse(fs.readFileSync(claudeSettings, "utf8"));
-  const claudeEntry = claudeParsedSettings.hooks.SessionStart.find((entry) => entry.hooks?.some((hook) => hook.command?.includes("open-notes-mcp:claude-code")));
-  check("Claude init registers startup/resume/compact hook with 10s timeout", claudeInit.status === 2
-    && /SKIP liveness: Claude Code CLI not found on PATH/.test(claudeInit.stdout)
-    && claudeEntry?.matcher === "startup|resume|compact"
-    && claudeEntry.hooks[0].timeout === 10);
-  const claudeSettingsHash = sha(claudeSettings);
-  const claudeMdHash = sha(claudeMd);
-  const claudeSecond = runNpx(["init", "--harness", "claude-code"], claudeEnv);
-  check("Claude init is byte-idempotent", claudeSecond.status === 2
-    && sha(claudeSettings) === claudeSettingsHash && sha(claudeMd) === claudeMdHash
-    && JSON.parse(fs.readFileSync(claudeSettings, "utf8")).hooks.SessionStart.filter((entry) => entry.hooks?.some((hook) => hook.command?.includes("open-notes-mcp:claude-code"))).length === 1);
-  const claudeDoctor = runNpx(["doctor", "--harness", "claude-code"], claudeEnv);
-  check("Claude doctor reports installed hook and skips absent CLI", claudeDoctor.status === 2
-    && /PASS Claude hook:/.test(claudeDoctor.stdout)
-    && /PASS CLAUDE.md:/.test(claudeDoctor.stdout)
-    && /SKIP liveness: Claude Code CLI not found on PATH/.test(claudeDoctor.stdout));
-  const claudeNotesBefore = snapshotTree(claudeEnv.AGENT_NOTES_DIR);
-  const claudeUninstall = runNpx(["uninstall", "--harness", "claude-code"], claudeEnv);
-  check("Claude uninstall restores user files and preserves notes", claudeUninstall.status === 0
-    && fs.readFileSync(claudeSettings, "utf8") === originalClaudeSettings
-    && fs.readFileSync(claudeMd, "utf8") === originalClaudeMd
-    && snapshotsEqual(claudeNotesBefore, snapshotTree(claudeEnv.AGENT_NOTES_DIR))
-    && !fs.existsSync(path.join(claudeEnv.CODEX_HOME, "open-notes-mcp.install.json")));
 
   fs.mkdirSync(path.join(loc.notes, "nested"), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(loc.notes, "INDEX.md"), "installer probe index\n", { mode: 0o600 });
