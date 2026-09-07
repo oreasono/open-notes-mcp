@@ -1,4 +1,4 @@
-# open-notes-mcp — Contract Specification (v0.2, 2026-09-07)
+# open-notes-mcp — Contract Specification (v0.3, 2026-09-07)
 
 > **Status**: publishable. This document is the clean-room source of truth for the
 > open-source implementation. It carries every "why" from the production-proven
@@ -264,3 +264,83 @@ All in `github.com/openai/codex` (Apache-2.0):
 - Window ladder: `model-provider/src/provider.rs` +
   `core/src/session/step_activation_tests.rs` (resolved 272,000 / usable 95% /
   auto-compact 90%).
+
+## 11. Second adapter: Claude Code (`SessionStart` hook)
+
+Everything above is the Codex bridge. This section adds a second *delivery*
+channel for the same notes. Nothing in §3–§5 changes: same directory, same
+files, same INDEX contract, same hint composition (§4), same stamp (§7).
+
+**Why this adapter is cheap.** §3 already established that the bridge reads
+the filesystem and never asks how a file got there. A Claude Code agent writes
+notes with whatever tool it has; the only new piece is *delivery* into a fresh
+context.
+
+### 11.1 Harness facts this adapter relies on (verified 2026-09-07 against the Claude Code hooks reference)
+
+- `SessionStart` fires when a session begins or resumes. Its matcher values are
+  `startup`, `resume`, `clear`, `compact`, `fork`. **`compact` is the analogue
+  of the Codex window cut** — context was just compacted; whatever should
+  survive must be re-delivered now.
+- A `SessionStart` command hook's output reaches the model either as plain
+  stdout or as JSON: `{"hookSpecificOutput":{"hookEventName":"SessionStart",
+  "additionalContext":"…"}}`. This adapter MUST use the JSON form (unambiguous;
+  nothing else on stdout is mistaken for context).
+- The hook receives JSON on stdin with at least `session_id`, `cwd`,
+  `hook_event_name`, and (on SessionStart) `model`.
+- Hooks live in `~/.claude/settings.json` under `hooks.SessionStart[]` as
+  `{matcher, hooks:[{type:"command", command, timeout}]}`; default timeout is
+  600 s, overridable per hook.
+
+### 11.2 Delivery contract
+
+- New subcommand on the same binary: `notes-mcp hint --source claude-code`.
+  It reads stdin JSON, composes the hint **with the same code path as
+  `thread_hint`** (§4 — same cap, same truncation and INDEX-overflow markers),
+  stamps `.last-hint` (§7) with `source=claude-code session_id=<id>`, and
+  prints the JSON above.
+- **No notes → print nothing, exit 0.** An empty `additionalContext` or a
+  friendly "no notes yet" is forbidden for the same reason as §2.
+- The hook is registered for `startup|resume|compact`. `clear` and `fork` are
+  deliberately excluded: `clear` is the user asking for a blank slate; `fork`
+  inherits the parent's context, which already carries the hint.
+- **Timeout MUST be set small (10 s) in the registered hook** — the same §2
+  reasoning: this runs before every session start; a slow hook is felt every
+  time. Cold start of `hint` MUST be < 200 ms.
+
+### 11.3 Installation contract (`init --harness claude-code`)
+
+Five steps, idempotent, mirroring §9's installer:
+
+1. locate the binary (same platform package as the Codex path);
+2. **register the hook** in `~/.claude/settings.json` — add exactly one entry
+   whose `command` carries a recognisable sentinel (so `uninstall` removes
+   *that entry and nothing else*). ⛔ Never rewrite, reorder, or reformat the
+   user's other hooks; the file must round-trip byte-for-byte apart from the
+   inserted entry;
+3. append the sentinel-marked INDEX contract block (§9 wording) to
+   `~/.claude/CLAUDE.md` — the analogue of `AGENTS.md`;
+4. record what was added in the installer state file (§9 location rules:
+   never inside the notes directory);
+5. **prove liveness**: if the `claude` CLI is present, run one non-interactive
+   session against a dead model endpoint (`ANTHROPIC_BASE_URL` pointing at a
+   closed port) and assert `.last-hint` was stamped with `source=claude-code`
+   — `SessionStart` hooks run before the model request, so a dead endpoint
+   proves delivery without spending tokens. If `claude` is absent, report
+   **SKIP** distinctly (never green) and exit `2`.
+
+Exit codes keep §9 semantics: `0` live · `2` installed but not proven live ·
+`1` failed. `doctor --harness claude-code` reports the hook entry, the CLAUDE.md
+block, the last `source=claude-code` stamp, and the same liveness probe.
+`uninstall --harness claude-code` removes only what step 2–4 added and
+**never touches a note**.
+
+### 11.4 What is deliberately not in scope
+
+- Reading the transcript (`transcript_path`) to auto-write notes. Writing stays
+  the agent's job under the contract (§9); an installer that silently mines
+  transcripts would change the product's trust model.
+- `PreCompact`. Delivering *into* the new context is what matters; hooking the
+  moment before compaction invites the "write everything in a panic" pattern
+  §9 exists to prevent.
+
