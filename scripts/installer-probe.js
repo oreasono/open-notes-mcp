@@ -70,12 +70,30 @@ function scanText(text, label) {
   return host ? { ok: false, detail: `${label} contains unapproved public host ${host}` } : { ok: true };
 }
 
+function sourceTreeFiles(root) {
+  const files = [];
+  const visit = (directory, relative = "") => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      const childRelative = relative ? path.join(relative, entry.name) : entry.name;
+      const child = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(child, childRelative);
+      else if (entry.isFile() || entry.isSymbolicLink()) files.push(childRelative);
+    }
+  };
+  visit(root);
+  return files;
+}
+
 function scanGitTree() {
   const listing = spawn("git", ["ls-files", "-z"]);
-  if (listing.error || listing.status !== 0) {
-    return { ok: false, detail: `cannot inspect git tree: ${listing.error?.message || listing.stderr || `exit ${listing.status}`}` };
+  const entries = listing.error || listing.status !== 0
+    ? sourceTreeFiles(repoRoot)
+    : listing.stdout.split("\0").filter(Boolean);
+  if (!entries.length) {
+    return { ok: false, detail: "cannot inspect source tree: no files found" };
   }
-  for (const entry of listing.stdout.split("\0").filter(Boolean)) {
+  for (const entry of entries) {
     const file = path.join(repoRoot, entry);
     let contents;
     try {
@@ -86,7 +104,7 @@ function scanGitTree() {
     const result = scanText(contents, `git file ${entry}`);
     if (!result.ok) return result;
   }
-  return { ok: true, detail: "all tracked files use approved public hosts" };
+  return { ok: true, detail: `all ${listing.error || listing.status !== 0 ? "source-tree" : "tracked"} files use approved public hosts` };
 }
 
 function scanTarball(tarball) {
