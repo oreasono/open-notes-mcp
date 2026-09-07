@@ -40,6 +40,19 @@ open-notes-mcp uninstall       # undoes its own changes — never your notes
 not `codex mcp list`. Exit codes: **`0` live · `2` installed but inactive ·
 `1` failed** — "installed" and "working" are different claims.
 
+Claude Code uses the same notes directory and INDEX contract through a
+`SessionStart` hook:
+
+```sh
+npx -y open-notes-mcp init --harness claude-code
+open-notes-mcp doctor --harness claude-code
+open-notes-mcp uninstall --harness claude-code
+```
+
+The hook delivers notes on `startup`, `resume`, and `compact` events. If the
+Claude CLI is not installed, setup reports `SKIP` and returns status `2` until
+the hook can be probed.
+
 ## The INDEX contract
 
 With the server installed and documented, agents wrote **zero** notes. Writing

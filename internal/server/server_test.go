@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -88,6 +89,51 @@ func TestLargeIndexHintNamesTheSource(t *testing.T) {
 	}
 	if len([]byte(hint)) > maxHintBytes || !strings.Contains(hint, "INDEX.md is too large") || !strings.Contains(hint, "split details") {
 		t.Fatalf("large index hint = %q (len=%d)", hint, len([]byte(hint)))
+	}
+}
+
+func TestClaudeCodeHintUsesSharedCompositionAndStamp(t *testing.T) {
+	root := t.TempDir()
+	s, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "INDEX.md"), []byte("claude marker\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := s.HintClaudeCode(strings.NewReader(`{"session_id":"session-42","hook_event_name":"SessionStart"}`), &output); err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		HookSpecificOutput struct {
+			Event   string `json:"hookEventName"`
+			Context string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.HookSpecificOutput.Event != "SessionStart" || !strings.Contains(response.HookSpecificOutput.Context, "claude marker") {
+		t.Fatalf("response = %s", output.String())
+	}
+	stamp, err := os.ReadFile(filepath.Join(root, ".last-hint"))
+	if err != nil || !strings.Contains(string(stamp), "source=claude-code session_id=session-42") {
+		t.Fatalf("stamp = %q, err=%v", stamp, err)
+	}
+}
+
+func TestClaudeCodeHintIsSilentWithoutNotes(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := s.HintClaudeCode(strings.NewReader(`{"session_id":"empty"}`), &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("empty hint wrote %q", output.String())
 	}
 }
 

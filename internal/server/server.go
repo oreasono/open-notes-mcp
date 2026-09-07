@@ -76,6 +76,43 @@ type Server struct {
 	store *Store
 }
 
+// HintStamp identifies the delivery channel for a composed hint. Codex uses
+// ThreadID; Claude Code uses Source and SessionID.
+type HintStamp struct {
+	ThreadID  string
+	Source    string
+	SessionID string
+}
+
+// HintClaudeCode consumes a Claude Code SessionStart hook payload and emits
+// the hookSpecificOutput envelope expected by Claude Code. Empty hints are
+// deliberately silent, while the filesystem stamp is still written.
+func (s *Server) HintClaudeCode(input io.Reader, output io.Writer) error {
+	var payload struct {
+		SessionID string `json:"session_id"`
+	}
+	decoder := json.NewDecoder(input)
+	if err := decoder.Decode(&payload); err != nil {
+		return fmt.Errorf("read Claude Code hook input: %w", err)
+	}
+	hint, err := s.store.hintWithStamp(HintStamp{Source: "claude-code", SessionID: payload.SessionID})
+	if err != nil {
+		return err
+	}
+	if hint == "" {
+		return nil
+	}
+	response := map[string]interface{}{
+		"hookSpecificOutput": map[string]string{
+			"hookEventName":     "SessionStart",
+			"additionalContext": hint,
+		},
+	}
+	encoder := json.NewEncoder(output)
+	encoder.SetEscapeHTML(false)
+	return encoder.Encode(response)
+}
+
 type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
@@ -540,6 +577,10 @@ func (s *Store) search(query string) ([]string, error) {
 }
 
 func (s *Store) hint(threadID string) (string, error) {
+	return s.hintWithStamp(HintStamp{ThreadID: threadID})
+}
+
+func (s *Store) hintWithStamp(stamp HintStamp) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entries, err := s.listLocked("")
@@ -547,7 +588,7 @@ func (s *Store) hint(threadID string) (string, error) {
 		return "", err
 	}
 	if len(entries) == 0 {
-		s.stampLocked(threadID, 0)
+		s.stampLocked(stamp, 0)
 		return "", nil
 	}
 	var b strings.Builder
@@ -580,7 +621,7 @@ func (s *Store) hint(threadID string) (string, error) {
 		b.WriteString(fmt.Sprintf("%s (%d bytes, %s)\n", entry.rel, entry.size, entry.mtime.UTC().Format(time.RFC3339)))
 	}
 	hint := truncateHint(b.String(), indexOverflow)
-	s.stampLocked(threadID, len([]byte(hint)))
+	s.stampLocked(stamp, len([]byte(hint)))
 	return hint, nil
 }
 
@@ -609,8 +650,14 @@ func truncateHint(hint string, indexOverflow bool) string {
 	return string(data) + marker
 }
 
-func (s *Store) stampLocked(threadID string, bytesCount int) {
-	line := fmt.Sprintf("last_thread_hint=%s thread_id=%s bytes=%d\n", time.Now().UTC().Format(time.RFC3339), threadID, bytesCount)
+func (s *Store) stampLocked(stamp HintStamp, bytesCount int) {
+	line := fmt.Sprintf("last_thread_hint=%s", time.Now().UTC().Format(time.RFC3339))
+	if stamp.Source != "" {
+		line += fmt.Sprintf(" source=%s session_id=%s", stamp.Source, stamp.SessionID)
+	} else {
+		line += fmt.Sprintf(" thread_id=%s", stamp.ThreadID)
+	}
+	line += fmt.Sprintf(" bytes=%d\n", bytesCount)
 	_ = s.writeAtomicLocked(".last-hint", []byte(line))
 }
 

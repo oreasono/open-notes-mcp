@@ -301,6 +301,41 @@ try {
     && fs.readFileSync(overrideDefault, "utf8") === "default global instructions\n"
     && fs.readFileSync(overrideActive, "utf8") === "active override instructions\n");
 
+  const claudeEnv = isolatedEnv("claude-harness");
+  claudeEnv.OPEN_NOTES_MCP_CLAUDE_BIN = path.join(tempRoot, "missing-claude");
+  const claudeSettings = path.join(claudeEnv.HOME, ".claude", "settings.json");
+  const claudeMd = path.join(claudeEnv.HOME, ".claude", "CLAUDE.md");
+  const originalClaudeSettings = '{"hooks":{"UserPromptSubmit":[{"matcher":"*","hooks":[]}]}, "custom":true}\n';
+  const originalClaudeMd = "user-owned Claude instructions\n";
+  fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
+  fs.writeFileSync(claudeSettings, originalClaudeSettings);
+  fs.writeFileSync(claudeMd, originalClaudeMd);
+  const claudeInit = runNpx(["init", "--harness", "claude-code"], claudeEnv);
+  const claudeParsedSettings = JSON.parse(fs.readFileSync(claudeSettings, "utf8"));
+  const claudeEntry = claudeParsedSettings.hooks.SessionStart.find((entry) => entry.hooks?.some((hook) => hook.command?.includes("open-notes-mcp:claude-code")));
+  check("Claude init registers startup/resume/compact hook with 10s timeout", claudeInit.status === 2
+    && /SKIP liveness: Claude Code CLI not found on PATH/.test(claudeInit.stdout)
+    && claudeEntry?.matcher === "startup|resume|compact"
+    && claudeEntry.hooks[0].timeout === 10);
+  const claudeSettingsHash = sha(claudeSettings);
+  const claudeMdHash = sha(claudeMd);
+  const claudeSecond = runNpx(["init", "--harness", "claude-code"], claudeEnv);
+  check("Claude init is byte-idempotent", claudeSecond.status === 2
+    && sha(claudeSettings) === claudeSettingsHash && sha(claudeMd) === claudeMdHash
+    && JSON.parse(fs.readFileSync(claudeSettings, "utf8")).hooks.SessionStart.filter((entry) => entry.hooks?.some((hook) => hook.command?.includes("open-notes-mcp:claude-code"))).length === 1);
+  const claudeDoctor = runNpx(["doctor", "--harness", "claude-code"], claudeEnv);
+  check("Claude doctor reports installed hook and skips absent CLI", claudeDoctor.status === 2
+    && /PASS Claude hook:/.test(claudeDoctor.stdout)
+    && /PASS CLAUDE.md:/.test(claudeDoctor.stdout)
+    && /SKIP liveness: Claude Code CLI not found on PATH/.test(claudeDoctor.stdout));
+  const claudeNotesBefore = snapshotTree(claudeEnv.AGENT_NOTES_DIR);
+  const claudeUninstall = runNpx(["uninstall", "--harness", "claude-code"], claudeEnv);
+  check("Claude uninstall restores user files and preserves notes", claudeUninstall.status === 0
+    && fs.readFileSync(claudeSettings, "utf8") === originalClaudeSettings
+    && fs.readFileSync(claudeMd, "utf8") === originalClaudeMd
+    && snapshotsEqual(claudeNotesBefore, snapshotTree(claudeEnv.AGENT_NOTES_DIR))
+    && !fs.existsSync(path.join(claudeEnv.CODEX_HOME, "open-notes-mcp.install.json")));
+
   fs.mkdirSync(path.join(loc.notes, "nested"), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(loc.notes, "INDEX.md"), "installer probe index\n", { mode: 0o600 });
   fs.writeFileSync(path.join(loc.notes, "nested", "opaque.bin"), crypto.randomBytes(257), { mode: 0o600 });
