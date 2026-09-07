@@ -1,0 +1,27 @@
+name: DCO
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch pull request history
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags origin "refs/heads/${BASE_REF}:refs/remotes/origin/base" "refs/pull/${PR_NUMBER}/head:refs/remotes/origin/pr-head"
+          git checkout --detach refs/remotes/origin/pr-head
+      - name: Check DCO sign-offs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: scripts/check-dco.sh "$BASE_SHA"

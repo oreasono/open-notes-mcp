@@ -13,7 +13,7 @@ const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "open-notes-mcp-installer
 const packRoot = path.join(tempRoot, "packs");
 const harnessRoot = path.join(tempRoot, "harness");
 const checks = [];
-const APPROVED_PUBLIC_HOSTS = new Set(["github.com", "developers.openai.com", "www.apache.org", "img.shields.io", "www.npmjs.com"]);
+const APPROVED_PUBLIC_HOSTS = new Set(["github.com", "developers.openai.com", "www.apache.org", "img.shields.io", "www.npmjs.com", "developercertificate.org"]);
 const URL_HOST_PATTERN = /\b(?:(?:git\+)?https?|ssh):\/\/([^/\s"'<>`]+)/gi;
 const npmEnv = {
   ...process.env,
