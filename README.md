@@ -1,31 +1,69 @@
 # open-notes-mcp
 
-Cross-window memory for [Codex CLI](https://github.com/openai/codex) users who
-run on an API key.
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/open-notes-mcp.svg)](https://www.npmjs.com/package/open-notes-mcp)
+[![Codex](https://img.shields.io/badge/codex-%E2%89%A5%200.148-informational)](https://github.com/openai/codex)
 
-With `features.token_budget` enabled, Codex hard-cuts to a fresh context window
-without summarising — a deliberate default, but nothing survives the cut unless
-the agent wrote it down first. Upstream's own answer (`ext/history-notes`) is
-closed in code to API-key users. This is an MCP server that fills that gap
-through the ungated `notes` / `thread_hint` bridge Codex still calls, and keeps
-working as plain readable files if that bridge ever goes away.
+**Model agnostic notes memory solution for Codex/ChatGPT.**
 
-> **Status: pre-release.** The contract is specified ([docs/SPEC.md](docs/SPEC.md));
-> the implementation is in progress. Nothing here is installable yet.
+## The problem
 
-## Development
+With `features.token_budget` on, Codex hard-cuts to a fresh context window
+without summarising. Nothing survives unless the agent wrote it down — and
+upstream's notes (`ext/history-notes`) sit behind three gates:
 
-Build the stdio server with Go 1.23 or newer:
-
-```sh
-go build -o notes-mcp ./cmd/notes-mcp
-AGENT_NOTES_DIR="$HOME/.agent-notes" ./notes-mcp
+```rust
+config.token_budget.use_history_notes_extension
+  && config.model_provider.is_openai()               // ← provider
+  && auth_manager.current_auth_uses_codex_backend()  // ← ApiKey => false, always
 ```
 
-The server reads and writes line-delimited JSON-RPC on stdin/stdout. Run the
-end-to-end probe from the repository root with `scripts/probe.sh` (or pass a
-prebuilt binary as its first argument).
+| you are… | native notes? |
+|---|---|
+| signed in with a **ChatGPT subscription** | ✅ |
+| **API key**, OpenAI model | ⛔ |
+| API key, **any other model provider** | ⛔ |
 
-## License
+**Notes are a subscription feature.** This server answers the bridge Codex still
+calls when native notes are off (`notes` / `thread_hint`), which checks
+**neither** gate. Same cut, same injection point, no membership test.
 
-Apache-2.0 — see [LICENSE](LICENSE).
+## Quick start
+
+```sh
+npx -y open-notes-mcp init     # idempotent; asks before enabling token_budget
+open-notes-mcp doctor          # what is installed, active, or broken
+open-notes-mcp uninstall       # undoes its own changes — never your notes
+```
+
+`init` proves itself with a real `codex exec` and a fresh `.last-hint` stamp,
+not `codex mcp list`. Exit codes: **`0` live · `2` installed but inactive ·
+`1` failed** — "installed" and "working" are different claims.
+
+## The INDEX contract
+
+With the server installed and documented, agents wrote **zero** notes. Writing
+is behavioural, so the installer ships a contract, not just a tool:
+
+> `INDEX.md` is a **table of contents, not a notebook** — one line per topic,
+> detail in its own file, updated at task boundaries, under ~3,500 bytes.
+
+The size rule matters: the hint is capped at 4,000 bytes, and what gets cut is
+whatever was written most recently.
+
+## Status
+
+Pre-1.0, verified against Codex `0.148` → `0.154.0-alpha`. Our own deployment,
+30 production agents over two days, counted as stated:
+
+| observed | counted by |
+|---|---|
+| **0 → 25/30** agents writing notes | a non-hidden file in the notes dir — not tool-call counts |
+| **25/30** had notes injected after a cut | `.last-hint` byte count `> 0` |
+| **7/30** hit the 4,000-byte cap | `INDEX.md` grown to 4–7 KB — found and fixed |
+
+Upstream calls the bridge *legacy*; it may vanish silently. Notes are plain files
+an agent can re-read, so that would cost the auto-injection, not the notes.
+Whether your agent writes *useful* notes is up to your agent.
+
+Full contract: [docs/SPEC.md](docs/SPEC.md) · Security: [SECURITY.md](SECURITY.md) · [Apache-2.0](LICENSE)

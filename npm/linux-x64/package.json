@@ -1,0 +1,10 @@
+{
+  "name": "@open-notes-mcp/linux-x64",
+  "version": "0.1.0",
+  "description": "open-notes-mcp native binary for Linux x64",
+  "license": "Apache-2.0",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "scripts": {"prepack": "sh ../../scripts/build-native.sh"},
+  "files": ["bin/notes-mcp"]
+}

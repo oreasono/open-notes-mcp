@@ -1,0 +1,10 @@
+{
+  "name": "@open-notes-mcp/darwin-x64",
+  "version": "0.1.0",
+  "description": "open-notes-mcp native binary for macOS x64",
+  "license": "Apache-2.0",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "scripts": {"prepack": "sh ../../scripts/build-native.sh"},
+  "files": ["bin/notes-mcp"]
+}

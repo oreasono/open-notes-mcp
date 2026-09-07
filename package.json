@@ -1,0 +1,41 @@
+{
+  "name": "open-notes-mcp",
+  "version": "0.1.0",
+  "description": "Cross-window file-backed notes for Codex CLI",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oreasono/open-notes-mcp.git"
+  },
+  "homepage": "https://github.com/oreasono/open-notes-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/oreasono/open-notes-mcp/issues"
+  },
+  "bin": {
+    "open-notes-mcp": "bin/open-notes-mcp.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "@open-notes-mcp/darwin-arm64": "0.1.0",
+    "@open-notes-mcp/darwin-x64": "0.1.0",
+    "@open-notes-mcp/linux-arm64": "0.1.0",
+    "@open-notes-mcp/linux-x64": "0.1.0",
+    "@open-notes-mcp/win32-arm64": "0.1.0",
+    "@open-notes-mcp/win32-x64": "0.1.0"
+  },
+  "scripts": {
+    "build:native": "sh scripts/build-native.sh",
+    "prepack": "npm run build:native",
+    "test": "node --test test/*.test.js",
+    "probe": "sh scripts/probe.sh",
+    "probe:installer": "node scripts/installer-probe.js"
+  }
+}
