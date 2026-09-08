@@ -110,6 +110,16 @@ One hidden tool plus five model-visible tools:
 | `list_files` | `{prefix?}` | newest first, with sizes + RFC3339 mtimes; read-only |
 | `search` | `{query}` required | case-insensitive substring, `path:line: text` output; read-only |
 
+README MUST include a compact **What the model gets** table immediately after
+Quick start and before the INDEX contract. Its rows MUST cover every visible
+tool above plus `thread_hint`; the `thread_hint` row MUST say that it is hidden
+from the model and Codex calls it at each new window. The table MUST also state
+that notes live at `$AGENT_NOTES_DIR`, defaulting to `~/.agent-notes`, with
+directory mode `0700` and file mode `0600`. The probe MUST assert that the
+`tools/list` name set is a subset of the names in this README table (excluding
+`thread_hint`, which is hidden); deleting a visible row, such as `search`, MUST
+make the probe fail.
+
 Error semantics: a caller mistake (bad path, oversize file) is reported via
 MCP `isError: true` with a `text` block — **not** a JSON-RPC error. A JSON-RPC
 error reads as "the tool is broken"; `isError` tells the model its own call
@@ -230,6 +240,9 @@ what the contract *asks for*, and measure what actually happens (§9 metrics).
 
 The installer therefore ships:
 
+- **Update `INDEX.md` before calling `new_context`.** `new_context` itself
+  saves nothing; upstream `openai/codex#43194` has the same trap, and so does
+  this bridge.
 - An `AGENTS.md` block (sentinel-marked, idempotently appended) establishing
   the INDEX contract: update `INDEX.md` at task boundaries (conclusions,
   direction changes, completed steps) — *note-taking is part of the workflow,
@@ -258,6 +271,11 @@ All in `github.com/openai/codex` (Apache-2.0):
   hint" (also: a failed native request must NOT fall back to the bridge).
 - Native-path gates: `codex-rs/ext/history-notes/src/extension.rs`.
 - `ApiKey => false`: `codex-rs/protocol/src/auth.rs`, `uses_codex_backend()`.
+- Direct tools enabled by `features.token_budget`:
+  `codex-rs/core/src/tools/spec_plan.rs:1190-1193`.
+- Context-management activation gates:
+  `codex-rs/core/src/session/token_budget.rs:13-35`.
+- Per-model token-budget guidance: `codex-rs/models-manager/models.json`.
 - Hidden-tool fixture + model-exposure assertion: core tests (`hooks_mcp.rs`,
   `token_budget.rs` — `token_budget_context_injects_plain_thread_hint_text`).
 - Fake SSE shapes: `codex-rs/core/tests/common/responses.rs`.
@@ -343,4 +361,3 @@ block, the last `source=claude-code` stamp, and the same liveness probe.
 - `PreCompact`. Delivering *into* the new context is what matters; hooking the
   moment before compaction invites the "write everything in a panic" pattern
   §9 exists to prevent.
-

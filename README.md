@@ -20,13 +20,15 @@ config.token_budget.use_history_notes_extension
 
 | you are… | native notes? |
 |---|---|
-| signed in with a **ChatGPT subscription** | ✅ |
+| ChatGPT sign-in on **Plus / Pro / Pro Lite** | ✅ — reported 404 in practice ([openai/codex#43194](https://github.com/openai/codex/issues/43194)) |
 | **API key**, OpenAI model | ⛔ |
 | API key, **any other model provider** | ⛔ |
 
+With an API key, `features.token_budget` alone provides `new_context` /
+`get_context_remaining`; `new_context` is `DirectModelOnly` (call it directly in code mode; `tools.new_context()` does not exist).
+Do not set `context_management.experimental_mode`: under API-key auth it is a no-op.
 **Notes are a subscription feature.** This server answers the bridge Codex still
-calls when native notes are off (`notes` / `thread_hint`), which checks
-**neither** gate. Same cut, same injection point, no membership test.
+calls when native notes are off (`notes` / `thread_hint`), which checks **neither** gate. Same cut, same injection point, no membership test.
 
 ## Quick start
 
@@ -53,10 +55,20 @@ The hook delivers notes on `startup`, `resume`, and `compact` events. If the
 Claude CLI is not installed, setup reports `SKIP` and returns status `2` until
 the hook can be probed.
 
+## What the model gets
+
+| tool | what it does |
+|---|---|
+| `read_file` / `write_file` / `append_to_file` | notes as plain files; writes report the byte count |
+| `list_files` | newest first, sizes + mtimes |
+| `search` | case-insensitive substring, `path:line: text` |
+| `thread_hint` | hidden from the model — Codex calls it at each new window; `INDEX.md` in full, everything else by name |
+
+The notes live at `$AGENT_NOTES_DIR` (default `~/.agent-notes`; directory `0700`, files `0600`).
+
 ## The INDEX contract
 
-With the server installed and documented, agents wrote **zero** notes. Writing
-is behavioural, so the installer ships a contract, not just a tool:
+With the server installed and documented, agents wrote **zero** notes. Writing is behavioural, so the installer ships a contract, not just a tool:
 
 > `INDEX.md` is a **table of contents, not a notebook** — one line per topic,
 > detail in its own file, updated at task boundaries, under ~3,500 bytes.
@@ -66,14 +78,14 @@ whatever was written most recently.
 
 ## Status
 
-Pre-1.0, verified against Codex `0.148` → `0.154.0-alpha`. Our own deployment,
-30 production agents over two days, counted as stated:
+Pre-1.0, verified against Codex `0.148` → `0.154.0-alpha`. Our own deployment, 30 production agents over two days, counted as stated:
 
 | observed | counted by |
 |---|---|
 | **0 → 25/30** agents writing notes | a non-hidden file in the notes dir — not tool-call counts |
 | **25/30** had notes injected after a cut | `.last-hint` byte count `> 0` |
 | **7/30** hit the 4,000-byte cap | `INDEX.md` grown to 4–7 KB — found and fixed |
+| **4/30** agents called `new_context` on their own, all heavy INDEX writers | `"name":"new_context"` `function_call` in rollouts, call+result deduplicated to 5 calls |
 
 Upstream calls the bridge *legacy*; it may vanish silently. Notes are plain files
 an agent can re-read, so that would cost the auto-injection, not the notes.

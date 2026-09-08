@@ -63,7 +63,71 @@ function resultOf(response) {
   return response && response.result;
 }
 
+function markdownSection(markdown, heading) {
+  const headingStart = markdown.indexOf(heading);
+  if (headingStart === -1) return "";
+  const sectionStart = markdown.indexOf("\n", headingStart) + 1;
+  const nextHeading = markdown.indexOf("\n## ", sectionStart);
+  return markdown.slice(sectionStart, nextHeading === -1 ? markdown.length : nextHeading);
+}
+
+function readmeToolNames(readme) {
+  const heading = "## What the model gets";
+  const section = markdownSection(readme, heading);
+  const names = new Set();
+  for (const line of section.split(/\r?\n/)) {
+    if (!line.trimStart().startsWith("|")) continue;
+    const toolCell = line.split("|")[1] || "";
+    for (const name of ["append_to_file", "list_files", "read_file", "search", "thread_hint", "write_file"]) {
+      if (toolCell.includes(`\`${name}\``)) names.add(name);
+    }
+  }
+  return names;
+}
+
 try {
+  const readme = fs.readFileSync(path.join(repoRoot, "README.md"), "utf8");
+  const spec = fs.readFileSync(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
+  const readmeLineCount = readme.trimEnd().split(/\r?\n/).length;
+  check("README stays at most 100 lines", readmeLineCount <= 100, `${readmeLineCount} lines`);
+
+  const gateTableStart = readme.indexOf("| you are… | native notes? |");
+  const gateRow = gateTableStart === -1 ? "" : readme.slice(gateTableStart).split(/\r?\n/)[2] || "";
+  check("README gate table lists Plus / Pro / Pro Lite and #43194",
+    gateRow.includes("ChatGPT sign-in")
+      && gateRow.includes("Plus / Pro / Pro Lite")
+      && gateRow.includes("reported 404 in practice")
+      && gateRow.includes("#43194"),
+    gateRow || "gate row missing");
+
+  const problemSection = markdownSection(readme, "## The problem");
+  const apiNoteTerms = [
+    "features.token_budget", "new_context", "get_context_remaining", "DirectModelOnly",
+    "tools.new_context()", "context_management.experimental_mode", "no-op",
+  ];
+  const missingApiNoteTerms = apiNoteTerms.filter((term) => !problemSection.includes(term));
+  check("README explains API-key token-budget tools", missingApiNoteTerms.length === 0,
+    missingApiNoteTerms.join(", ") || "all terms present");
+
+  const statusSection = markdownSection(readme, "## Status");
+  check("README states the observed new_context count",
+    statusSection.includes("**4/30**")
+      && statusSection.includes("`\"name\":\"new_context\"`")
+      && statusSection.includes("5 calls"));
+
+  const behavioralSection = markdownSection(spec, "## 9.");
+  check("SPEC requires writing INDEX before new_context",
+    /Update `INDEX\.md` before calling `new_context`/.test(behavioralSection)
+      && /`new_context` itself\s+saves nothing/.test(behavioralSection)
+      && behavioralSection.includes("openai/codex#43194")
+      && behavioralSection.includes("this bridge"));
+
+  const referencesSection = markdownSection(spec, "## 10.");
+  const referenceTerms = ["spec_plan.rs:1190-1193", "token_budget.rs:13-35", "models.json"];
+  const missingReferenceTerms = referenceTerms.filter((term) => !referencesSection.includes(term));
+  check("SPEC cites token-budget upstream sources", missingReferenceTerms.length === 0,
+    missingReferenceTerms.join(", ") || "all references present");
+
   buildIfNeeded();
   fs.mkdirSync(notesRoot, { recursive: true, mode: 0o700 });
 
@@ -81,6 +145,10 @@ try {
   check("tools/list exposes exactly five model tools", JSON.stringify(names) === JSON.stringify([
     "append_to_file", "list_files", "read_file", "search", "write_file",
   ]) && !names.includes("thread_hint"), names.join(", "));
+  const documentedToolNames = readmeToolNames(readme);
+  const missingFromReadme = names.filter((name) => name !== "thread_hint" && !documentedToolNames.has(name));
+  check("tools/list names are documented in README table", missingFromReadme.length === 0, missingFromReadme.join(", ") || "all present");
+  check("README table includes hidden thread_hint", documentedToolNames.has("thread_hint"), [...documentedToolNames].join(", "));
 
   fs.writeFileSync(path.join(notesRoot, "INDEX.md"), `${marker}\ncurated conclusion\n`, { mode: 0o600 });
   fs.writeFileSync(path.join(notesRoot, "note-a.md"), "alpha\n", { mode: 0o600 });
