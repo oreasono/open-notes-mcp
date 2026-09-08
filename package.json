@@ -36,6 +36,7 @@
     "prepack": "npm run build:native",
     "test": "node --test test/*.test.js",
     "probe": "sh scripts/probe.sh",
-    "probe:installer": "node scripts/installer-probe.js"
+    "probe:installer": "node scripts/installer-probe.js",
+    "probe:e2e": "node scripts/e2e-probe.js"
   }
 }
