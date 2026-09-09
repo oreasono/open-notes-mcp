@@ -99,7 +99,7 @@ Two consequences worth designing for:
 - This widens the addressable surface: a harness that never exposes these
   tools still works, provided its agent can write to the notes directory.
 
-One hidden tool plus five model-visible tools:
+One hidden tool plus eight model-visible tools:
 
 | tool | schema | notes |
 |---|---|---|
@@ -109,6 +109,9 @@ One hidden tool plus five model-visible tools:
 | `append_to_file` | `{path, content}` required | creates if missing; reports bytes |
 | `list_files` | `{prefix?}` | newest first, with sizes + RFC3339 mtimes; read-only |
 | `search` | `{query}` required | case-insensitive substring, `path:line: text` output; read-only |
+| `history_windows` | `{}` | summarize local rollout windows; read-only |
+| `history_search` | `{query, limit?}` required | search earlier local rollout text; read-only |
+| `history_read` | `{handle, offset?, max_bytes?}` required | bounded read of a history match; read-only |
 
 README MUST include a compact **What the model gets** table immediately after
 Quick start and before the INDEX contract. Its rows MUST cover every visible
