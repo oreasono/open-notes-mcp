@@ -35,6 +35,23 @@ function spawnSync(command, args, options = {}) {
   });
 }
 
+function codexVersion(output) {
+  const match = output.match(/(?:^|\s)codex-cli\s+(\d+)\.(\d+)\.(\d+)(?:[-+][^\s]+)?(?:\s|$)/);
+  return match ? match.slice(1, 4).map(Number) : null;
+}
+
+function versionAtLeast(version, minimum) {
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (version[index] !== minimum[index]) return version[index] > minimum[index];
+  }
+  return true;
+}
+
+function blocked(detail) {
+  process.stdout.write(`BLOCKED: ${detail}\n`);
+  process.exitCode = 2;
+}
+
 function runProcess(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = childProcess.spawn(command, args, {
@@ -211,26 +228,26 @@ function writeConfig(port) {
 }
 
 async function main() {
-  fs.mkdirSync(notesRoot, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(notesRoot, "INDEX.md"), `e2e probe marker: ${noteMarker}\n`, { mode: 0o600 });
-
   const codex = process.env.OPEN_NOTES_MCP_CODEX_BIN || "codex";
   const preflight = spawnSync(codex, ["--version"], { timeout: 5000 });
   if (preflight.error) {
-    check("Codex preflight does not crash when unavailable", false, preflight.error.message);
-    process.exitCode = 1;
+    blocked(`Codex CLI not found on PATH (${preflight.error.message})`);
     return;
   }
-  if (preflight.status === 2) {
-    check("Codex preflight exit 2 is reported without crashing", true, "BLOCKED: exit 2");
-    process.exitCode = 2;
+  const versionOutput = `${preflight.stdout || ""}\n${preflight.stderr || ""}`;
+  const version = codexVersion(versionOutput);
+  if (preflight.status !== 0 || !version) {
+    blocked(`could not determine Codex CLI version (exit ${preflight.status})`);
     return;
   }
-  check("Codex preflight is available", preflight.status === 0, `exit ${preflight.status}`);
-  if (preflight.status !== 0) {
-    process.exitCode = 1;
+  if (!versionAtLeast(version, [0, 148, 0])) {
+    blocked(`Codex CLI 0.148.0 or newer is required; found ${version.join(".")}`);
     return;
   }
+  check("Codex preflight is available", true, `codex-cli ${version.join(".")}`);
+
+  fs.mkdirSync(notesRoot, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(notesRoot, "INDEX.md"), `e2e probe marker: ${noteMarker}\n`, { mode: 0o600 });
 
   const build = spawnSync(process.env.GO_BIN || "go", ["build", "-o", binary, "./cmd/notes-mcp"], { timeout: 60000 });
   check("native bridge builds for the e2e run", build.status === 0 && fs.existsSync(binary), build.stderr?.trim() || "");
