@@ -9,6 +9,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const { once } = require("events");
+const { GUIDANCE_MESSAGE } = require("../lib/installer");
 
 const repoRoot = path.resolve(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "open-notes-mcp-e2e-probe-"));
@@ -17,6 +18,7 @@ const codexHome = path.join(tempRoot, "home", ".codex");
 const binary = path.join(tempRoot, "notes-mcp");
 const checks = [];
 const noteMarker = `E2E-PROBE-${crypto.randomUUID()}`;
+const guidanceMarker = "open-notes-mcp:guidance:v1";
 
 function check(label, condition, detail = "") {
   const ok = Boolean(condition);
@@ -208,8 +210,9 @@ function writeConfig(port) {
     'model_provider = "e2e-probe"',
     'model_context_window = 10000',
     "",
-    "[features]",
-    "token_budget = true",
+    "[features.token_budget]",
+    "enabled = true",
+    `guidance_message = ${JSON.stringify(GUIDANCE_MESSAGE)}`,
     "",
     "[model_providers.e2e-probe]",
     'name = "e2e-probe"',
@@ -291,10 +294,13 @@ async function main() {
 
   const firstContexts = contextWindows(responseRequests[0]);
   const secondContexts = contextWindows(responseRequests[1]);
+  const firstGuidance = collectStrings(responseRequests[0]?.parsed)
+    .filter((text) => text.includes("<context_window_guidance>"));
   const first = firstContexts[0];
   const second = secondContexts[0];
   check("first request carries a context-window envelope", first != null);
   check("second request carries a context-window envelope", second != null);
+  check("first request carries the configured context-window guidance", firstGuidance.some((text) => text.includes(guidanceMarker)), guidanceMarker);
   check("window id changes after new_context", first != null && second != null && first.current !== second.current,
     first && second ? `${first.current} -> ${second.current}` : "missing window ids");
   check("second Previous window id points to the first window", first != null && second != null && second.previous === first.current,

@@ -40,7 +40,12 @@ open-notes-mcp uninstall       # undoes its own changes — never your notes
 
 `init` proves itself with a real `codex exec` and a fresh `.last-hint` stamp,
 not `codex mcp list`. Exit codes: **`0` live · `2` installed but inactive ·
-`1` failed** — "installed" and "working" are different claims.
+`1` failed** — "installed" and "working" are different claims. For Codex,
+guidance is written by default only when `model_provider` names a custom
+provider. With no provider or `model_provider = "openai"`, the catalog owns the
+token-budget defaults and `doctor` reports `SKIP guidance` without failing. Use
+`init --with-guidance` or `init --without-guidance` to override that default;
+an existing user-owned guidance message is preserved and passes.
 
 Claude Code uses the same notes directory and INDEX contract through a
 `SessionStart` hook:

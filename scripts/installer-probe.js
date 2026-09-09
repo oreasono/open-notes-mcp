@@ -360,7 +360,7 @@ try {
     binary: path.join(env.XDG_DATA_HOME, "open-notes-mcp", "bin", process.platform === "win32" ? "notes-mcp.exe" : "notes-mcp"),
     notes: env.AGENT_NOTES_DIR,
   };
-  const originalConfig = '# user-owned config\n[features]\ntoken_budget = false # original value\n';
+  const originalConfig = 'model_provider = "myproxy"\n\n[model_providers.myproxy]\nname = "myproxy"\nbase_url = "http://127.0.0.1:9/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nrequires_openai_auth = false\n\n# user-owned config\n[features]\ntoken_budget = false # original value\n';
   const originalAgents = "# User instructions\n\nKeep this text.\n";
   fs.mkdirSync(env.CODEX_HOME, { recursive: true });
   fs.writeFileSync(loc.config, originalConfig);
@@ -380,9 +380,15 @@ try {
     ["binary", sha(loc.binary)],
   ]);
   const stateAfterInit = JSON.parse(fs.readFileSync(loc.state, "utf8"));
+  const configAfterInit = fs.readFileSync(loc.config, "utf8");
   check("init records token budget ownership in CODEX_HOME state", stateAfterInit.tokenBudget.value === false
     && stateAfterInit.tokenBudget.line.includes("original value")
     && (fs.statSync(loc.state).mode & 0o777) === 0o600);
+  check("init installs marked token-budget guidance", configAfterInit.includes("open-notes-mcp:guidance:v1")
+    && /guidance_message\s*=/.test(configAfterInit));
+  const customDoctor = runDirect(["doctor"], env);
+  check("custom model provider guidance passes doctor", customDoctor.status === 0
+    && /PASS guidance: managed guidance_message installed/.test(customDoctor.stdout));
   const second = runNpx(["init", "--enable-token-budget"], env);
   const secondHashes = new Map([
     ["config", sha(loc.config)],
@@ -392,6 +398,13 @@ try {
   check("second init is byte-idempotent", second.status === 0 && snapshotsEqual(firstHashes, secondHashes));
   const agentsOnce = fs.readFileSync(loc.agents, "utf8");
   check("AGENTS sentinel appears exactly once", agentsOnce.split("<!-- open-notes-mcp:begin -->").length - 1 === 1);
+  const configWithGuidance = fs.readFileSync(loc.config, "utf8");
+  const configWithoutGuidance = configWithGuidance.replace(/,\s*guidance_message\s*=\s*"(?:\\.|[^"\\])*"/, "");
+  fs.writeFileSync(loc.config, configWithoutGuidance);
+  const missingGuidanceDoctor = runDirect(["doctor"], env);
+  check("doctor rejects a missing token-budget guidance message", missingGuidanceDoctor.status === 1
+    && /FAIL guidance: no guidance_message configured/.test(missingGuidanceDoctor.stdout));
+  fs.writeFileSync(loc.config, configWithGuidance);
 
   const consentEnv = isolatedEnv("consent-declined");
   const declined = runDirect(["init"], consentEnv, "n\n");
@@ -405,6 +418,54 @@ try {
   check("doctor reports declined token budget as inactive", declinedDoctor.status === 2
     && /WARN token budget: installed but inactive/.test(declinedDoctor.stdout)
     && /SKIP liveness: token_budget is disabled/.test(declinedDoctor.stdout));
+
+  const catalogEnv = isolatedEnv("catalog-owned-guidance");
+  const catalogConfigPath = path.join(catalogEnv.CODEX_HOME, "config.toml");
+  fs.mkdirSync(catalogEnv.CODEX_HOME, { recursive: true });
+  fs.writeFileSync(catalogConfigPath, "[features]\ntoken_budget = true\n");
+  const catalogInit = runDirect(["init"], catalogEnv);
+  const catalogConfig = fs.readFileSync(catalogConfigPath, "utf8");
+  const catalogDoctor = runDirect(["doctor"], catalogEnv);
+  check("missing model provider skips guidance without failing doctor", catalogInit.status === 0
+    && !catalogConfig.includes("open-notes-mcp:guidance:v1")
+    && catalogDoctor.status === 0
+    && /SKIP guidance: model catalog owns token-budget defaults \(see openai\/codex#42918\)/.test(catalogDoctor.stdout));
+
+  const openaiEnv = isolatedEnv("openai-owned-guidance");
+  const openaiConfigPath = path.join(openaiEnv.CODEX_HOME, "config.toml");
+  fs.mkdirSync(openaiEnv.CODEX_HOME, { recursive: true });
+  fs.writeFileSync(openaiConfigPath, 'model_provider = "openai"\n[features]\ntoken_budget = true\n');
+  const openaiInit = runDirect(["init"], openaiEnv);
+  const openaiConfig = fs.readFileSync(openaiConfigPath, "utf8");
+  const openaiDoctor = runDirect(["doctor"], openaiEnv);
+  check("OpenAI model provider skips guidance without failing doctor", openaiInit.status === 0
+    && !openaiConfig.includes("open-notes-mcp:guidance:v1")
+    && openaiDoctor.status === 0
+    && /SKIP guidance: model catalog owns token-budget defaults \(see openai\/codex#42918\)/.test(openaiDoctor.stdout));
+
+  const forcedGuidanceEnv = isolatedEnv("forced-guidance");
+  const forcedConfigPath = path.join(forcedGuidanceEnv.CODEX_HOME, "config.toml");
+  fs.mkdirSync(forcedGuidanceEnv.CODEX_HOME, { recursive: true });
+  fs.writeFileSync(forcedConfigPath, "[features]\ntoken_budget = true\n");
+  const forcedInit = runDirect(["init", "--with-guidance"], forcedGuidanceEnv);
+  const forcedConfig = fs.readFileSync(forcedConfigPath, "utf8");
+  const forcedDoctor = runDirect(["doctor"], forcedGuidanceEnv);
+  check("--with-guidance overrides the catalog gate", forcedInit.status === 0
+    && forcedConfig.includes("open-notes-mcp:guidance:v1")
+    && forcedDoctor.status === 0
+    && /PASS guidance: managed guidance_message installed/.test(forcedDoctor.stdout));
+
+  const suppressedGuidanceEnv = isolatedEnv("suppressed-guidance");
+  const suppressedConfigPath = path.join(suppressedGuidanceEnv.CODEX_HOME, "config.toml");
+  fs.mkdirSync(suppressedGuidanceEnv.CODEX_HOME, { recursive: true });
+  fs.writeFileSync(suppressedConfigPath, 'model_provider = "myproxy"\n\n[model_providers.myproxy]\nname = "myproxy"\nbase_url = "http://127.0.0.1:9/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nrequires_openai_auth = false\n\n[features]\ntoken_budget = true\n');
+  const suppressedInit = runDirect(["init", "--without-guidance"], suppressedGuidanceEnv);
+  const suppressedConfig = fs.readFileSync(suppressedConfigPath, "utf8");
+  const suppressedDoctor = runDirect(["doctor"], suppressedGuidanceEnv);
+  check("--without-guidance suppresses the custom-provider default", suppressedInit.status === 0
+    && !suppressedConfig.includes("open-notes-mcp:guidance:v1")
+    && suppressedDoctor.status === 0
+    && /SKIP guidance: disabled by explicit choice/.test(suppressedDoctor.stdout));
 
   const overrideEnv = isolatedEnv("global-override");
   const overrideDefault = path.join(overrideEnv.CODEX_HOME, "AGENTS.md");

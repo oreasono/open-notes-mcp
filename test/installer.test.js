@@ -16,11 +16,19 @@ const {
   claudeSettingsHook,
   codexVersion,
   enableTokenBudget,
+  GUIDANCE_MARKER,
+  GUIDANCE_MESSAGE,
+  isCustomModelProvider,
+  guidanceMessageEntry,
+  modelProviderEntry,
   mcpServerEntry,
   removeManagedBlock,
+  removeManagedGuidance,
   removeManagedTokenBudget,
   removeClaudeHook,
+  shouldInstallGuidance,
   tokenBudgetEntry,
+  upsertGuidanceMessage,
   upsertClaudeSettings,
   upsertManagedBlock,
 } = require("../lib/installer");
@@ -110,6 +118,75 @@ test("Codex version gate accepts 0.148 and rejects older releases", () => {
 test("Codex MCP entry parser reads real codex mcp add output", () => {
   const entry = mcpServerEntry('[mcp_servers.notes]\ncommand = "/home/me/.local/share/open-notes-mcp/bin/notes-mcp"\n\n[features]\ntoken_budget = true\n');
   assert.deepStrictEqual(entry, { start: 0, end: 3, command: "/home/me/.local/share/open-notes-mcp/bin/notes-mcp" });
+});
+
+test("guidance insertion supports all token budget config forms and uninstalls byte-for-byte", () => {
+  const configs = [
+    "[features]\ntoken_budget = true\n",
+    "features.token_budget = true\n",
+    "[features.token_budget]\nenabled = true\nreminder_threshold_tokens = 100\n",
+  ];
+  for (const original of configs) {
+    const once = upsertGuidanceMessage(original);
+    assert.ok(once.text.includes(GUIDANCE_MARKER));
+    assert.ok(Buffer.byteLength(GUIDANCE_MESSAGE) < 2000);
+    assert.ok(guidanceMessageEntry(once.text));
+    assert.strictEqual(upsertGuidanceMessage(once.text).text, once.text);
+    assert.strictEqual(removeManagedGuidance(once.text), original);
+  }
+});
+
+test("guidance defaults follow the model provider gate", () => {
+  const noProvider = "[features]\ntoken_budget = true\n";
+  const openai = 'model_provider = "openai"\n[features]\ntoken_budget = true\n';
+  const custom = 'model_provider = "myproxy"\n[features]\ntoken_budget = true\n';
+  assert.strictEqual(modelProviderEntry(noProvider), null);
+  assert.strictEqual(isCustomModelProvider(noProvider), false);
+  assert.strictEqual(shouldInstallGuidance(noProvider), false);
+  assert.strictEqual(isCustomModelProvider(openai), false);
+  assert.strictEqual(shouldInstallGuidance(openai), false);
+  assert.strictEqual(modelProviderEntry(custom).value, "myproxy");
+  assert.strictEqual(isCustomModelProvider(custom), true);
+  assert.strictEqual(shouldInstallGuidance(custom), true);
+});
+
+test("guidance flags override the model provider gate", () => {
+  const custom = 'model_provider = "myproxy"\n';
+  const openai = 'model_provider = "openai"\n';
+  assert.strictEqual(shouldInstallGuidance(openai, true), true);
+  assert.strictEqual(shouldInstallGuidance(custom, false), false);
+});
+
+test("guidance gate treats provider spellings case-insensitively and ignores nested keys", () => {
+  const openai = 'model_provider = "OPENAI"\n\n[model_providers.proxy]\nmodel_provider = "not-root"\n';
+  const custom = 'model_provider = "myproxy"\n\n[model_providers.proxy]\nmodel_provider = "not-root"\n';
+  assert.strictEqual(modelProviderEntry(openai).value, "OPENAI");
+  assert.strictEqual(shouldInstallGuidance(openai), false);
+  assert.strictEqual(modelProviderEntry(custom).value, "myproxy");
+  assert.strictEqual(shouldInstallGuidance(custom), true);
+});
+
+test("guidance insertion preserves user-owned guidance_message", () => {
+  const original = "[features.token_budget]\nenabled = true\nguidance_message = \"user guidance\"\n";
+  assert.strictEqual(upsertGuidanceMessage(original).text, original);
+  assert.strictEqual(removeManagedGuidance(original), original);
+});
+
+test("guidance insertion preserves scalar token-budget comments", () => {
+  const original = "[features]\ntoken_budget = true # user setting\n";
+  const installed = upsertGuidanceMessage(original).text;
+  assert.match(installed, /guidance_message = .* # user setting$/m);
+  assert.strictEqual(removeManagedGuidance(installed), original);
+});
+
+test("guidance uninstall preserves edits to a managed token-budget line", () => {
+  const original = "[features]\ntoken_budget = true # user setting\n";
+  const installed = upsertGuidanceMessage(original).text;
+  const edited = installed.replace("guidance_message", "guidance_message_override");
+  const removed = removeManagedGuidance(edited);
+  assert.ok(!removed.includes("open-notes-mcp:guidance:changed:"));
+  assert.ok(removed.includes("guidance_message_override"));
+  assert.ok(!removed.includes("token_budget = true # user setting"));
 });
 
 test("Claude settings insertion preserves non-managed JSON bytes and is idempotent", () => {
