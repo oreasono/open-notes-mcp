@@ -284,7 +284,7 @@ async function main() {
 
   const responseRequests = requests.filter((entry) => entry.path?.endsWith("/responses"));
   const runDetail = run.error?.message || `exit ${run.status}${run.stderr.trim() ? `: ${run.stderr.trim().slice(0, 240)}` : ""}`;
-  check("Codex preflight accepts exit 0 or 2 without crashing", run.error == null && (run.status === 0 || run.status === 2), runDetail);
+  check("Codex exec accepts exit 0 or 2 without crashing", run.error == null && (run.status === 0 || run.status === 2), runDetail);
   check("fake Responses endpoint recorded two requests", responseRequests.length === 2, `${responseRequests.length} requests`);
   check("first request body is valid JSON", responseRequests[0]?.parsed != null);
   check("second request body is valid JSON", responseRequests[1]?.parsed != null);
