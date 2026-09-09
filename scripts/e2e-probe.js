@@ -309,6 +309,9 @@ async function main() {
   check("context-window envelope is closed", second?.text.includes("</context_window>"));
   check("Codex received the new_context tool in the first request", responseRequests[0]?.parsed
     && collectStrings(responseRequests[0].parsed).includes("new_context"));
+  const firstToolNames = collectStrings(responseRequests[0]?.parsed);
+  check("Codex received all local history tools in the first request",
+    ["history_windows", "history_search", "history_read"].every((name) => firstToolNames.includes(name)));
   const stampPath = path.join(notesRoot, ".last-hint");
   const stamp = fs.existsSync(stampPath) ? fs.readFileSync(stampPath, "utf8") : "";
   check("bridge stamp records the thread hint", stamp.includes("thread_id="));

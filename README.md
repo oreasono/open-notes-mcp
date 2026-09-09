@@ -67,6 +67,7 @@ the hook can be probed.
 | `read_file` / `write_file` / `append_to_file` | notes as plain files; writes report the byte count |
 | `list_files` | newest first, sizes + mtimes |
 | `search` | case-insensitive substring, `path:line: text` |
+| `history_windows` / `history_search` / `history_read` | read-only recovery from earlier windows in this thread's local Codex JSONL |
 | `thread_hint` | hidden from the model — Codex calls it at each new window; `INDEX.md` in full, everything else by name |
 
 The notes live at `$AGENT_NOTES_DIR` (default `~/.agent-notes`; directory `0700`, files `0600`).

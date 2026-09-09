@@ -29,8 +29,9 @@ const (
 // append-and-rename operation indivisible when several requests arrive in one
 // process.
 type Store struct {
-	root string
-	mu   sync.Mutex
+	root        string
+	historyRoot string
+	mu          sync.Mutex
 }
 
 // NewFromEnvironment creates a server rooted at AGENT_NOTES_DIR, or at
@@ -68,7 +69,14 @@ func New(root string) (*Server, error) {
 	if err := os.Chmod(abs, 0700); err != nil {
 		return nil, fmt.Errorf("protect notes root: %w", err)
 	}
-	return &Server{store: &Store{root: abs}}, nil
+	historyRoot := os.Getenv("CODEX_HOME")
+	if historyRoot == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			historyRoot = filepath.Join(home, ".codex")
+		}
+	}
+	return &Server{store: &Store{root: abs, historyRoot: historyRoot}}, nil
 }
 
 // Server is a line-delimited JSON-RPC MCP server.
@@ -241,6 +249,9 @@ func toolDefinitions() []map[string]interface{} {
 		{"name": "append_to_file", "description": "Append to a note file atomically. Reports bytes appended; files are limited to 1000000 bytes.", "inputSchema": object(map[string]interface{}{"path": pathProperty, "content": contentProperty}, []string{"path", "content"})},
 		{"name": "list_files", "description": "List note files newest first with sizes and RFC3339 modification times.", "inputSchema": object(map[string]interface{}{"prefix": map[string]interface{}{"type": "string", "description": "Optional relative path prefix."}}, nil)},
 		{"name": "search", "description": "Case-insensitive substring search across note files; returns path:line: text matches.", "inputSchema": object(map[string]interface{}{"query": map[string]interface{}{"type": "string"}}, []string{"query"})},
+		{"name": "history_windows", "description": "Summarize earlier local Codex context windows for this thread.", "inputSchema": object(map[string]interface{}{}, nil)},
+		{"name": "history_search", "description": "Search message and tool-call text in earlier local Codex context windows.", "inputSchema": object(map[string]interface{}{"query": map[string]interface{}{"type": "string"}, "limit": map[string]interface{}{"type": "integer", "minimum": 1}}, []string{"query"})},
+		{"name": "history_read", "description": "Read a bounded original history item by its history_search handle.", "inputSchema": object(map[string]interface{}{"handle": map[string]interface{}{"type": "string"}, "offset": map[string]interface{}{"type": "integer", "minimum": 0}, "max_bytes": map[string]interface{}{"type": "integer", "minimum": 1}}, []string{"handle"})},
 	}
 }
 
@@ -344,6 +355,63 @@ func (s *Server) handleToolCall(raw json.RawMessage) toolResult {
 			return toolResult{Content: []textContent{}}
 		}
 		return textResult(hint)
+	case "history_windows":
+		args, err := decodeObject(params.Arguments, true)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		if err := rejectUnknown(args); err != nil {
+			return errorResult(err.Error())
+		}
+		result, err := s.store.historyWindows(params.Meta.ThreadID)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		return textResult(result)
+	case "history_search":
+		args, err := decodeObject(params.Arguments, false)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		query, err := requiredString(args, "query")
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		if err := rejectUnknown(args, "query", "limit"); err != nil {
+			return errorResult(err.Error())
+		}
+		limit := 0
+		if rawLimit, ok := args["limit"]; ok {
+			if err := json.Unmarshal(rawLimit, &limit); err != nil || limit < 1 {
+				return errorResult("limit must be a positive integer")
+			}
+		}
+		result, err := s.store.historySearch(params.Meta.ThreadID, query, limit)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		return textResult(result)
+	case "history_read":
+		args, err := decodeObject(params.Arguments, false)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		handle, err := requiredString(args, "handle")
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		if err := rejectUnknown(args, "handle", "offset", "max_bytes"); err != nil {
+			return errorResult(err.Error())
+		}
+		offset, maxBytes, err := historyReadOptions(args)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		result, err := s.store.historyRead(params.Meta.ThreadID, handle, offset, maxBytes)
+		if err != nil {
+			return errorResult(err.Error())
+		}
+		return textResult(result)
 	default:
 		return errorResult("unknown tool: " + params.Name)
 	}
@@ -587,38 +655,47 @@ func (s *Store) hintWithStamp(stamp HintStamp) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(entries) == 0 {
+	historyAvailable := false
+	if doc, historyErr := s.history(stamp.ThreadID); historyErr == nil {
+		historyAvailable = doc != nil && len(doc.Windows) > 1
+	}
+	if len(entries) == 0 && !historyAvailable {
 		s.stampLocked(stamp, 0)
 		return "", nil
 	}
 	var b strings.Builder
-	b.WriteString("Notes you wrote in earlier context windows of this session.\nRead any file below with the notes read_file tool.\n\n")
-	indexPath := filepath.Join(s.root, "INDEX.md")
 	indexOverflow := false
-	if info, statErr := os.Lstat(indexPath); statErr == nil && info.Mode().IsRegular() {
-		if info.Size() > maxFileBytes {
-			indexOverflow = true
-			b.WriteString("--- INDEX.md ---\n")
-			b.WriteString(indexOverflowText)
-			b.WriteString("\n\n")
-		} else {
-			data, readErr := os.ReadFile(indexPath)
-			if readErr != nil {
-				return "", fmt.Errorf("read INDEX.md: %w", readErr)
+	if len(entries) > 0 {
+		b.WriteString("Notes you wrote in earlier context windows of this session.\nRead any file below with the notes read_file tool.\n\n")
+		indexPath := filepath.Join(s.root, "INDEX.md")
+		if info, statErr := os.Lstat(indexPath); statErr == nil && info.Mode().IsRegular() {
+			if info.Size() > maxFileBytes {
+				indexOverflow = true
+				b.WriteString("--- INDEX.md ---\n")
+				b.WriteString(indexOverflowText)
+				b.WriteString("\n\n")
+			} else {
+				data, readErr := os.ReadFile(indexPath)
+				if readErr != nil {
+					return "", fmt.Errorf("read INDEX.md: %w", readErr)
+				}
+				b.WriteString("--- INDEX.md ---\n")
+				indexText := normalizeTrailingNewline(data)
+				b.WriteString(indexText)
+				b.WriteString("\n")
+				indexOverflow = len([]byte(indexText)) > maxHintBytes-len([]byte("Notes you wrote in earlier context windows of this session.\nRead any file below with the notes read_file tool.\n\n--- INDEX.md ---\n\n--- other notes ---\n"))
 			}
-			b.WriteString("--- INDEX.md ---\n")
-			indexText := normalizeTrailingNewline(data)
-			b.WriteString(indexText)
-			b.WriteString("\n")
-			indexOverflow = len([]byte(indexText)) > maxHintBytes-len([]byte("Notes you wrote in earlier context windows of this session.\nRead any file below with the notes read_file tool.\n\n--- INDEX.md ---\n\n--- other notes ---\n"))
+		}
+		b.WriteString("--- other notes ---\n")
+		for _, entry := range entries {
+			if entry.rel == "INDEX.md" {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("%s (%d bytes, %s)\n", entry.rel, entry.size, entry.mtime.UTC().Format(time.RFC3339)))
 		}
 	}
-	b.WriteString("--- other notes ---\n")
-	for _, entry := range entries {
-		if entry.rel == "INDEX.md" {
-			continue
-		}
-		b.WriteString(fmt.Sprintf("%s (%d bytes, %s)\n", entry.rel, entry.size, entry.mtime.UTC().Format(time.RFC3339)))
+	if historyAvailable {
+		b.WriteString("history_search is available for earlier windows of this session\n")
 	}
 	hint := truncateHint(b.String(), indexOverflow)
 	s.stampLocked(stamp, len([]byte(hint)))

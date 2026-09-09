@@ -254,6 +254,8 @@ The installer therefore ships:
   more than twice the §4 cap, at which point over half of it stops surviving
   window cuts (§4). A contract that only says "write notes" produces exactly
   this failure; the size discipline has to be stated as part of the contract.
+- For details that may need to be recovered later, leave distinctive keywords
+  in `INDEX.md` and use `history_search` to retrieve the original text.
 - Optional guard rail, **convenience only**: a `write_file` to `INDEX.md` above
   the threshold may return an advisory alongside the byte count (§3).
   ⛔ It must not be load-bearing — an agent writing by shell redirect never
@@ -361,3 +363,49 @@ block, the last `source=claude-code` stamp, and the same liveness probe.
 - `PreCompact`. Delivering *into* the new context is what matters; hooking the
   moment before compaction invites the "write everything in a panic" pattern
   §9 exists to prevent.
+
+## 12. Local history
+
+The bridge exposes read-only recovery for earlier Codex context windows. Its
+only source is the canonical rollout JSONL at
+`$CODEX_HOME/sessions/**/rollout-*-<threadId>.jsonl`; `CODEX_HOME` defaults to
+`~/.codex`. The thread ID comes from `_meta.threadId` on the MCP call. SQLite
+materializations are never consulted, and history calls never write the
+rollout or anything under `sessions/`.
+
+This contract is pinned to Codex `0.148` through `0.153.4`. A top-level
+`type: "compacted"` record closes the preceding window and starts the next.
+Its `window_number`, `first_window_id`, `previous_window_id`, and `window_id`
+fields (or the equivalent `*_context_window_id` names used by newer rollouts)
+establish the ordering and identities; records before the first such boundary
+belong to window 1. Individual response and turn records do not carry a window
+ID, so their position in the JSONL determines membership. Rollout ordinals are
+used when present; otherwise the physical line number supplies a stable handle
+ordinal.
+
+Parsing is deliberately tolerant. Invalid JSON, unknown top-level types, and
+records missing required fields are skipped and counted, never promoted to a
+fatal parsing error. `compacted.payload.replacement_history` is a nested copy,
+not a second source of searchable records. If the exact thread rollout is not
+present, every history tool returns a non-error empty result containing
+`no history for this thread`.
+
+The three model-visible tools are:
+
+- `history_windows {}`: return each window's 1-based ordinal, full window ID,
+  valid item count, physical JSONL byte count, and first/last timestamp, plus a
+  top-level `skipped_lines` count.
+- `history_search {query, limit?}`: case-insensitive literal substring search
+  over top-level `response_item` message text, function-call name/arguments,
+  and function-call output text in **earlier windows only**. Each match returns
+  handle `w<window>#<rollout-ordinal>`, window ID, kind, and a UTF-8 snippet of
+  at most 1024 bytes. The complete textual result is at most 4000 bytes; when
+  truncated it names the condition and directs the model to narrow the query
+  or use `history_read`.
+- `history_read {handle, offset?, max_bytes?}`: return original searchable text
+  for a handle. `offset` is a zero-based UTF-8 byte offset; `max_bytes` defaults
+  to 1024 and is capped at 4000. A partial result includes `next_offset`.
+
+When the current thread has at least one earlier window, `thread_hint` adds
+`history_search is available for earlier windows of this session`. That line
+shares §4's 4000-byte total hint cap and is omitted before the first cut.
