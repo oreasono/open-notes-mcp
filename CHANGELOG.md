@@ -15,13 +15,13 @@
 
 - `init` writes `features.token_budget.guidance_message` only when a custom,
   non-OpenAI `model_provider` is configured. Any explicit child key can make
-  Codex discard the model catalog's defaults (see issue #42918).
+  Codex discard the model catalog's defaults (see openai/codex#42918).
 - Use `--with-guidance` or `--without-guidance` to override the default. An
   existing user-owned guidance message is preserved.
 
 ### README and specification
 
-- The README now documents the three token-budget gate states and issue #43194,
+- The README now documents the three token-budget gate states and openai/codex#43194,
   the complete tool table, and the local history recovery surface.
 - The specification records the INDEX-before-`new_context` workflow in §9 and
   the local rollout history contract in §12.
