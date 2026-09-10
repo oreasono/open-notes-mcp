@@ -18,6 +18,7 @@ const codexHome = path.join(tempRoot, "home", ".codex");
 const binary = path.join(tempRoot, "notes-mcp");
 const checks = [];
 const noteMarker = `E2E-PROBE-${crypto.randomUUID()}`;
+const historyMarker = `E2E-HISTORY-${crypto.randomUUID()}`;
 const guidanceMarker = "open-notes-mcp:guidance:v1";
 
 function check(label, condition, detail = "") {
@@ -140,8 +141,32 @@ function modelList() {
   return { object: "list", data: [{ id: "gpt-5", object: "model", owned_by: "openai" }] };
 }
 
-function startResponsesServer() {
+function mcpCall(binaryPath, notesDirectory, codexDirectory, threadID, name, args) {
+  const input = `${JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name, arguments: args, _meta: { threadId: threadID } },
+  })}\n`;
+  const result = childProcess.spawnSync(binaryPath, [], {
+    cwd: repoRoot,
+    env: { ...process.env, AGENT_NOTES_DIR: notesDirectory, CODEX_HOME: codexDirectory },
+    input,
+    encoding: "utf8",
+    timeout: 10000,
+  });
+  if (result.error || result.status !== 0) return null;
+  const line = result.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
+  try {
+    return JSON.parse(line)?.result?.content?.[0]?.text || null;
+  } catch {
+    return null;
+  }
+}
+
+function startResponsesServer(options) {
   const requests = [];
+  const historyCalls = { search: null, read: null, threadID: null };
   const server = http.createServer((request, response) => {
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
@@ -169,6 +194,21 @@ function startResponsesServer() {
         return;
       }
       const responseNumber = requests.filter((entry) => entry.path?.endsWith("/responses")).length;
+      if (responseNumber === 2) {
+        const stampPath = path.join(options.notesRoot, ".last-hint");
+        const stamp = fs.existsSync(stampPath) ? fs.readFileSync(stampPath, "utf8") : "";
+        const threadID = stamp.match(/thread_id=([0-9a-f-]{36})/)?.[1];
+        historyCalls.threadID = threadID || null;
+        if (threadID) {
+          for (let attempt = 0; attempt < 10; attempt += 1) {
+            historyCalls.search = mcpCall(options.binary, options.notesRoot, options.codexHome, threadID, "history_search", { query: historyMarker, limit: 5 });
+            if (historyCalls.search && JSON.parse(historyCalls.search).matches?.length) break;
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+          }
+          const handle = historyCalls.search && JSON.parse(historyCalls.search).matches?.[0]?.handle;
+          if (handle) historyCalls.read = mcpCall(options.binary, options.notesRoot, options.codexHome, threadID, "history_read", { handle, max_bytes: 4000 });
+        }
+      }
       const responseBody = responseNumber === 1
         ? sse([responseCreated("e2e-response-1"), newContextCall(), responseCompleted("e2e-response-1")])
         : sse([responseCreated("e2e-response-2"), assistantMessage(), responseCompleted("e2e-response-2")]);
@@ -180,7 +220,7 @@ function startResponsesServer() {
       response.end(responseBody);
     });
   });
-  return { server, requests };
+  return { server, requests, historyCalls };
 }
 
 function collectStrings(value, output = []) {
@@ -256,7 +296,7 @@ async function main() {
   check("native bridge builds for the e2e run", build.status === 0 && fs.existsSync(binary), build.stderr?.trim() || "");
   if (build.status !== 0 || !fs.existsSync(binary)) return;
 
-  const { server, requests } = startResponsesServer();
+  const { server, requests, historyCalls } = startResponsesServer({ binary, notesRoot, codexHome });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();
@@ -276,12 +316,11 @@ async function main() {
   const run = await runProcess(codex, [
     "exec",
     "--json",
-    "--ephemeral",
     "--skip-git-repo-check",
     "--dangerously-bypass-approvals-and-sandbox",
     "-C",
     repoRoot,
-    "Call new_context now, then finish the probe.",
+    `Call new_context now. After the new window starts, call history_search with query ${historyMarker}, then read its first handle with history_read, and finish the probe.`,
   ], { env, timeout: 90000 });
   await new Promise((resolve) => server.close(resolve));
 
@@ -306,14 +345,47 @@ async function main() {
   check("second Previous window id points to the first window", first != null && second != null && second.previous === first.current,
     first && second ? `previous=${second.previous || "missing"}` : "missing window ids");
   check("second context-window envelope contains the note text", second?.text.includes(noteMarker), noteMarker);
+  check("first request carries the history marker", collectStrings(responseRequests[0]?.parsed).some((text) => text.includes(historyMarker)), historyMarker);
   check("context-window envelope is closed", second?.text.includes("</context_window>"));
   check("Codex received the new_context tool in the first request", responseRequests[0]?.parsed
     && collectStrings(responseRequests[0].parsed).includes("new_context"));
   const firstToolNames = collectStrings(responseRequests[0]?.parsed);
   check("Codex received all local history tools in the first request",
     ["history_windows", "history_search", "history_read"].every((name) => firstToolNames.includes(name)));
+  let historySearchResult = null;
+  let historyReadResult = null;
+  try {
+    historySearchResult = historyCalls.search ? JSON.parse(historyCalls.search) : null;
+    historyReadResult = historyCalls.read ? JSON.parse(historyCalls.read) : null;
+  } catch {
+    historySearchResult = null;
+    historyReadResult = null;
+  }
+  check("real MCP history_search runs after the window cut", historySearchResult?.matches?.length > 0);
+  check("history_search hit belongs to the first window", historySearchResult?.matches?.[0]?.window_id === first?.current,
+    historySearchResult?.matches?.[0]?.window_id || "missing");
+  check("real MCP history_read returns the original marker", historyReadResult?.text?.includes(historyMarker));
+  const rolloutFiles = [];
+  const sessionsRoot = path.join(codexHome, "sessions");
+  if (fs.existsSync(sessionsRoot)) {
+    const walk = (directory) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) walk(absolute);
+        else if (entry.isFile() && /^rollout-.*\.jsonl$/.test(entry.name)) rolloutFiles.push(absolute);
+      }
+    };
+    walk(sessionsRoot);
+  }
   const stampPath = path.join(notesRoot, ".last-hint");
   const stamp = fs.existsSync(stampPath) ? fs.readFileSync(stampPath, "utf8") : "";
+  const rolloutThread = rolloutFiles.find((file) => file.includes(stamp.match(/thread_id=([0-9a-f-]{36})/)?.[1] || "never"));
+  check("Codex persisted a rollout for the hinted thread", rolloutThread != null, rolloutFiles.join(", "));
+  if (rolloutThread) {
+    const rolloutText = fs.readFileSync(rolloutThread, "utf8");
+    check("rollout contains a compacted boundary", rolloutText.includes('"type":"compacted"'));
+    check("rollout retains the history marker", rolloutText.includes(historyMarker));
+  }
   check("bridge stamp records the thread hint", stamp.includes("thread_id="));
 }
 

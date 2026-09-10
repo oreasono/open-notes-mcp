@@ -91,16 +91,25 @@ function writeHistoryFixture() {
   fs.mkdirSync(sessions, { recursive: true, mode: 0o700 });
   const firstWindow = crypto.randomUUID();
   const secondWindow = crypto.randomUUID();
+  const thirdWindow = crypto.randomUUID();
   const lines = [
     { timestamp: "2026-09-09T01:00:00Z", type: "session_meta", payload: { id: threadID } },
-    { timestamp: "2026-09-09T01:00:01Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `${marker} history fixture` }] } },
+    { timestamp: "2026-09-09T01:00:01Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `${marker} history fixture ${"x".repeat(5_500)}` }] } },
     { timestamp: "2026-09-09T01:00:02Z", type: "response_item", payload: { type: "function_call", name: "history_lookup", arguments: `{"query":"${marker}"}` } },
-    { timestamp: "2026-09-09T01:00:03Z", type: "compacted", payload: { window_number: 1, first_context_window_id: firstWindow, previous_context_window_id: firstWindow, context_window_id: secondWindow } },
-    { timestamp: "2026-09-09T01:00:04Z", type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "current window" }] } },
+    { timestamp: "2026-09-09T01:00:03Z", type: "future_rollout_type", payload: { value: "skip me" } },
+    "{\"timestamp\":",
+    { timestamp: "2026-09-09T01:00:05Z", type: "compacted", payload: { window_number: 1, first_context_window_id: firstWindow, previous_context_window_id: firstWindow, context_window_id: secondWindow, replacement_history: [{ type: "message", content: [{ type: "input_text", text: `NESTED-ONLY-${marker}` }] }] } },
+    { timestamp: "2026-09-09T01:00:06Z", type: "response_item", payload: { type: "function_call_output", output: "window two output" } },
+    { timestamp: "2026-09-09T01:00:07Z", type: "compacted", payload: { window_number: 2, first_context_window_id: firstWindow, previous_context_window_id: secondWindow, context_window_id: thirdWindow } },
+    { timestamp: "2026-09-09T01:00:08Z", type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "current window only" }] } },
   ];
   const rollout = path.join(sessions, `rollout-${threadID}.jsonl`);
-  fs.writeFileSync(rollout, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
-  return { firstWindow, secondWindow };
+  fs.writeFileSync(rollout, `${lines.map((line) => typeof line === "string" ? line : JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
+  return { firstWindow, secondWindow, thirdWindow };
+}
+
+function fileHash(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
 try {
@@ -149,6 +158,8 @@ try {
   buildIfNeeded();
   fs.mkdirSync(notesRoot, { recursive: true, mode: 0o700 });
   const historyFixture = writeHistoryFixture();
+  const historyRollout = path.join(codexHome, "sessions", "2026", "09", "09", `rollout-${threadID}.jsonl`);
+  const historyBeforeHash = fileHash(historyRollout);
 
   const coldStart = process.hrtime.bigint();
   const cold = run([{ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }]);
@@ -176,20 +187,36 @@ try {
   ]);
   const historyWindows = resultOf(historyResponses[1])?.content?.[0]?.text || "";
   const historySearch = resultOf(historyResponses[2])?.content?.[0]?.text || "";
+  let historyWindowResult;
   let historyMatch;
   try {
+    historyWindowResult = JSON.parse(historyWindows);
     historyMatch = JSON.parse(historySearch).matches?.[0];
   } catch {
+    historyWindowResult = null;
     historyMatch = null;
   }
-  check("history_windows summarizes both local windows", historyWindows.includes(historyFixture.firstWindow) && historyWindows.includes(historyFixture.secondWindow));
+  check("history_windows summarizes three local windows", historyWindowResult?.windows?.length === 3
+    && historyWindows.includes(historyFixture.firstWindow)
+    && historyWindows.includes(historyFixture.secondWindow)
+    && historyWindows.includes(historyFixture.thirdWindow));
+  check("history_windows counts unknown and malformed lines", historyWindowResult?.skipped_lines === 2);
   check("history_search finds the earlier fixture text", historyMatch?.handle === "w1#2" && historyMatch.window_id === historyFixture.firstWindow);
+  check("history_search bounds each snippet to 1024 bytes", historyMatch != null && Buffer.byteLength(historyMatch.snippet || "", "utf8") <= 1024);
+  check("history_search stays within the 4000-byte output cap", Buffer.byteLength(historySearch, "utf8") <= 4000);
+  const nestedResponses = run([
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+    call(2, "history_search", { query: `NESTED-ONLY-${marker}` }, { threadId: threadID }),
+  ]);
+  const nestedText = resultOf(nestedResponses[1])?.content?.[0]?.text || "";
+  check("history_search excludes compacted replacement_history copies", !nestedText.includes("NESTED-ONLY"));
   const historyRead = run([
     { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
     call(2, "history_read", { handle: historyMatch?.handle, max_bytes: 4000 }, { threadId: threadID }),
   ]);
   const historyReadText = resultOf(historyRead[1])?.content?.[0]?.text || "";
   check("history_read returns original fixture text", historyReadText.includes(`${marker} history fixture`));
+  check("history tools leave the rollout byte-for-byte unchanged", fileHash(historyRollout) === historyBeforeHash);
 
   fs.writeFileSync(path.join(notesRoot, "INDEX.md"), `${marker}\ncurated conclusion\n`, { mode: 0o600 });
   fs.writeFileSync(path.join(notesRoot, "note-a.md"), "alpha\n", { mode: 0o600 });
