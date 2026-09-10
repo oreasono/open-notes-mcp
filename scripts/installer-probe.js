@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { cleanup } = require("./lib/child-tracker");
 
 const repoRoot = path.resolve(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "open-notes-mcp-installer-probe-"));
@@ -36,6 +37,7 @@ function spawn(command, args, options = {}) {
     input: options.input,
     encoding: options.encoding === undefined ? "utf8" : options.encoding,
     timeout: options.timeout || 30000,
+    killSignal: options.killSignal || "SIGTERM",
     maxBuffer: options.maxBuffer || 16 * 1024 * 1024,
   });
 }
@@ -553,5 +555,10 @@ try {
   }
 }
 
-if (checks.length && checks.every(Boolean) && process.exitCode === undefined) process.exitCode = 0;
-else if (process.exitCode === undefined) process.exitCode = 1;
+cleanup().catch((error) => {
+  process.stderr.write(`${error.stack || error}\n`);
+  process.exitCode = 2;
+}).finally(() => {
+  if (checks.length && checks.every(Boolean) && process.exitCode === undefined) process.exitCode = 0;
+  else if (process.exitCode === undefined) process.exitCode = 1;
+});

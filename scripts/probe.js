@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { cleanup } = require("./lib/child-tracker");
 
 const repoRoot = path.resolve(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "open-notes-mcp-probe-"));
@@ -29,11 +30,11 @@ function buildIfNeeded() {
     cwd: repoRoot,
     env: process.env,
     encoding: "utf8",
+    killSignal: "SIGTERM",
     maxBuffer: 16 * 1024 * 1024,
   });
   if (result.status !== 0) {
-    process.stderr.write(result.stderr || result.error?.message || "go build failed\n");
-    process.exit(2);
+    throw new Error(result.stderr || result.error?.message || "go build failed");
   }
 }
 
@@ -45,6 +46,7 @@ function run(requests) {
     env: { ...process.env, AGENT_NOTES_DIR: notesRoot, CODEX_HOME: codexHome },
     encoding: "utf8",
     timeout: 10000,
+    killSignal: "SIGTERM",
     maxBuffer: 16 * 1024 * 1024,
   });
   if (result.error) throw result.error;
@@ -288,5 +290,10 @@ try {
   process.exitCode = 2;
 }
 
-if (checks.length > 0 && checks.every(Boolean) && process.exitCode === undefined) process.exitCode = 0;
-else if (process.exitCode === undefined) process.exitCode = 1;
+cleanup().catch((error) => {
+  process.stderr.write(`${error.stack || error}\n`);
+  process.exitCode = 2;
+}).finally(() => {
+  if (checks.length > 0 && checks.every(Boolean) && process.exitCode === undefined) process.exitCode = 0;
+  else if (process.exitCode === undefined) process.exitCode = 1;
+});

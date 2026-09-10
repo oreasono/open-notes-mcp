@@ -10,6 +10,7 @@ const os = require("os");
 const path = require("path");
 const { once } = require("events");
 const { GUIDANCE_MESSAGE } = require("../lib/installer");
+const { track, cleanup } = require("./lib/child-tracker");
 
 const repoRoot = path.resolve(__dirname, "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "open-notes-mcp-e2e-probe-"));
@@ -34,6 +35,7 @@ function spawnSync(command, args, options = {}) {
     input: options.input,
     encoding: options.encoding === undefined ? "utf8" : options.encoding,
     timeout: options.timeout || 30000,
+    killSignal: options.killSignal || "SIGTERM",
     maxBuffer: options.maxBuffer || 16 * 1024 * 1024,
   });
 }
@@ -57,11 +59,12 @@ function blocked(detail) {
 
 function runProcess(command, args, options = {}) {
   return new Promise((resolve) => {
-    const child = childProcess.spawn(command, args, {
+    const child = track(childProcess.spawn(command, args, {
       cwd: options.cwd || repoRoot,
       env: options.env || process.env,
+      detached: false,
       stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
+    }));
     const stdout = [];
     const stderr = [];
     let settled = false;
@@ -154,6 +157,7 @@ function mcpCall(binaryPath, notesDirectory, codexDirectory, threadID, name, arg
     input,
     encoding: "utf8",
     timeout: 10000,
+    killSignal: "SIGTERM",
   });
   if (result.error || result.status !== 0) return null;
   const line = result.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
@@ -392,7 +396,8 @@ async function main() {
 main().catch((error) => {
   process.stderr.write(`${error.stack || error}\n`);
   process.exitCode = 2;
-}).finally(() => {
+}).finally(async () => {
+  await cleanup();
   if (checks.length && checks.every(Boolean) && process.exitCode === undefined) process.exitCode = 0;
   else if (process.exitCode === undefined) process.exitCode = 1;
 });
