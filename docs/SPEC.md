@@ -1,4 +1,4 @@
-# open-notes-mcp — Contract Specification (v0.3, 2026-09-07)
+# open-notes-mcp — Contract Specification (v0.4, 2026-09-10)
 
 > **Status**: publishable. This document is the clean-room source of truth for the
 > open-source implementation. It carries every "why" from the production-proven

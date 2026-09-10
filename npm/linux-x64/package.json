@@ -1,6 +1,6 @@
 {
   "name": "@open-notes-mcp/linux-x64",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "open-notes-mcp native binary for Linux x64",
   "license": "Apache-2.0",
   "os": ["linux"],
